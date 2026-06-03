@@ -5,26 +5,26 @@
 **a harbour for your fleet of agent sessions.**
 
 you run a whole fleet of coding agents at once — **Claude Code** and **Codex** sessions scattered
-across iTerm tabs and IntelliJ terminals. Harbar is the harbour they all report into: one macOS
-menu bar panel showing every session at a glance — which are working, which need your input, which
-are idle — so you stop alt-tabbing through terminals hunting for the one blocked on a prompt. click
-any session to sail straight to its terminal.
+across iTerm and Terminal tabs, VSCode and Cursor panes, JetBrains terminals, wherever they run.
+Harbar is the harbour they all report into: one macOS menu bar panel showing every session at a
+glance — which are working, which need your input, which are idle — so you stop alt-tabbing through
+windows hunting for the one blocked on a prompt. click any session to sail straight to it.
 
 ```
 🔐2 💤3 ▸1 ✓5      ← menu bar badge
 ─────────────────
 🔐 PERMISSION (claude) (2)
    ◆ api@fix-login · refactor session    · iTerm     · 12s
-   ◆ webapp@feat-search · add filters    · IntelliJ  · 1m
+   ◆ webapp@feat-search · add filters    · Cursor    · 1m
 💤 IDLE PROMPT (waiting on you) (3)
    ◆ ...
 🛑 APPROVAL (codex) (0)
 ▸ WORKING (1)
-   ✦ worker@main · add retry logic       · iTerm     · 4s
+   ☁ worker@main · add retry logic       · VSCode    · 4s
 ✓ IDLE (5)
 ```
 
-◆ = claude, ✦ = codex. each session shows `project@branch · task`.
+◆ = claude, ☁ = codex. each session shows `project@branch · task`.
 
 ## how it works
 
@@ -68,11 +68,14 @@ then:
 
 ## usage
 
+- **tracking works in any terminal or IDE** — iTerm, Terminal, VSCode, Cursor, JetBrains, WezTerm,
+  Ghostty, … the hooks are Claude/Codex features and fire regardless of where the CLI runs.
 - the badge shows counts per kind (zeros omitted). click it for the grouped list.
-- click a session row to focus its terminal:
-  - **iTerm** — selects the exact tab.
-  - **IntelliJ** — raises the matching project window (a specific JediTerm tab isn't scriptable).
-    first use prompts for an Accessibility grant.
+- click a session row to focus it:
+  - **iTerm** — selects the exact tab (the only terminal that exposes its tabs to AppleScript).
+  - **VSCode / Cursor / JetBrains / Terminal / …** — raises the app and, best-effort, the window
+    whose title matches the project. macOS doesn't expose integrated-terminal tabs, so this lands on
+    the project window, not the exact split. first use prompts for an Accessibility grant.
 - a session entering needs-input pops a desktop notification (idle / permission / approval / form).
   with `terminal-notifier` installed, **clicking the notification focuses that terminal**; otherwise
   it's a plain banner.

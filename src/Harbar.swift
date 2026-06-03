@@ -40,7 +40,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
 
-    let tag = ["claude": "◆", "codex": "✦"]
+    let tag = ["claude": "◆", "codex": "☁\u{FE0E}"]   // U+FE0E = text (monochrome) presentation
     // needs-input kinds, each its own section + emoji, in display order
     let kinds: [(String, String, String)] = [
         ("permission_prompt", "🔐", "PERMISSION (claude)"),

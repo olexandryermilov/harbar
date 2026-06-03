@@ -1,23 +1,24 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# focus.sh <agent> <session_id> — bring a session's terminal to the front.
-# iTerm: selects the exact session via AppleScript.
-# IntelliJ: raises the matching PROJECT WINDOW by title (a specific JediTerm tab
-#   is not scriptable). needs a one-time Accessibility grant for the caller.
-# Other: raises Terminal.app.
+# focus.sh <agent> <session_id> — bring a session's terminal/IDE to the front.
+# iTerm: selects the exact tab (only terminal that exposes tabs to AppleScript).
+# everything else (VSCode, Cursor, JetBrains, Terminal, …): raises the app and,
+#   best-effort, the window whose title matches the project. integrated-terminal
+#   TABS aren't scriptable on macOS, so this lands on the project window, not the
+#   exact split. needs a one-time Accessibility grant for the caller.
 agent="$1"; sid="$2"
 f="$HOME/.harbar/sessions/$agent-$sid.json"
 [ -f "$f" ] || exit 0
 
 field() { /usr/bin/python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2],'') or '')" "$f" "$1"; }
 term=$(field terminal)
-iterm=$(field iterm_session_id)
+app=$(field focus_app)
 proj=$(field project)
+iterm=$(field iterm_session_id)
 uuid="${iterm##*:}"   # strip the w0t1p0: prefix -> the UUID iTerm's AppleScript 'id' exposes
 
-case "$term" in
-  iTerm)
-    /usr/bin/osascript <<EOF
+if [ "$term" = "iTerm" ]; then
+  /usr/bin/osascript <<EOF
 tell application "iTerm2"
   activate
   repeat with w in windows
@@ -34,26 +35,21 @@ tell application "iTerm2"
   end repeat
 end tell
 EOF
-    ;;
-  IntelliJ)
-    /usr/bin/open -a "IntelliJ IDEA" 2>/dev/null
-    # raise the project window whose title contains the project name
-    /usr/bin/osascript <<EOF 2>/dev/null
+  exit 0
+fi
+
+# raise the editor/terminal app, then best-effort raise its project window
+[ -n "$app" ] && /usr/bin/open -a "$app" 2>/dev/null || /usr/bin/open -a "Terminal" 2>/dev/null
+[ -n "$proj" ] && { sleep 0.3; /usr/bin/osascript <<EOF 2>/dev/null ; }
 tell application "System Events"
-  repeat with p in (every process whose name contains "idea" or name contains "IntelliJ" or name contains "JetBrains")
-    set frontmost of p to true
-    repeat with w in windows of p
-      try
-        if name of w contains "$proj" then
-          perform action "AXRaise" of w
-          return
-        end if
-      end try
-    end repeat
+  set fp to first process whose frontmost is true
+  repeat with w in windows of fp
+    try
+      if name of w contains "$proj" then
+        perform action "AXRaise" of w
+        return
+      end if
+    end try
   end repeat
 end tell
 EOF
-    ;;
-  *)
-    /usr/bin/open -a "Terminal" 2>/dev/null ;;
-esac

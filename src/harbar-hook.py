@@ -48,6 +48,32 @@ def terminal_notifier():
 TN = terminal_notifier()
 
 
+def detect_terminal():
+    """(display_label, focus_app) for the terminal/IDE hosting the session."""
+    env = os.environ
+    cf = env.get("__CFBundleIdentifier", "").lower()
+    tp = env.get("TERM_PROGRAM", "")
+    if env.get("TERMINAL_EMULATOR") == "JetBrains-JediTerm" or "jetbrains" in cf:
+        return "JetBrains", "IntelliJ IDEA"
+    if tp == "iTerm.app":
+        return "iTerm", "iTerm"
+    if tp == "vscode" or any(x in cf for x in ("vscode", "cursor", "todesktop", "windsurf")):
+        blob = (cf + " " + " ".join(env.get(k, "") for k in (
+            "VSCODE_GIT_ASKPASS_NODE", "VSCODE_GIT_ASKPASS_MAIN", "VSCODE_GIT_IPC_HANDLE"))).lower()
+        if "cursor" in blob or "todesktop" in blob:
+            return "Cursor", "Cursor"
+        if "windsurf" in blob:
+            return "Windsurf", "Windsurf"
+        return "VSCode", "Visual Studio Code"
+    if tp == "Apple_Terminal":
+        return "Terminal", "Terminal"
+    if tp == "WezTerm":
+        return "WezTerm", "WezTerm"
+    if tp.lower() == "ghostty":
+        return "Ghostty", "Ghostty"
+    return (tp or "terminal"), (tp or "")
+
+
 def git_branch(cwd):
     try:
         r = subprocess.run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
@@ -108,19 +134,14 @@ try:
     f = HARBAR / f"{agent}-{sid}.json"
     prev = json.loads(f.read_text()) if f.exists() else {}
 
-    def term_label():
-        if os.environ.get("TERMINAL_EMULATOR") == "JetBrains-JediTerm":
-            return "IntelliJ"
-        tp = os.environ.get("TERM_PROGRAM", "")
-        return "iTerm" if tp == "iTerm.app" else (tp or "terminal")
-
     name = ev["hook_event_name"]
     cwd = ev.get("cwd", prev.get("cwd", ""))
+    disp_term, focus_app = detect_terminal()
     rec = dict(prev)
     rec.update(
         agent=agent, session_id=sid, cwd=cwd,
         project=os.path.basename(cwd.rstrip("/")) or cwd,
-        terminal=term_label(),
+        terminal=disp_term, focus_app=focus_app,
         iterm_session_id=os.environ.get("ITERM_SESSION_ID", prev.get("iterm_session_id")),
         agent_pid=find_agent_pid(),
         last_event=name, last_activity=time.time(),
