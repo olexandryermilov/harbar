@@ -1,0 +1,29 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1E293B"/>
+      <stop offset="0.55" stop-color="#3730A3"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- app-icon rounded square (transparent corners) -->
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+
+  <g stroke="#FFFFFF" stroke-width="52" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- shackle ring -->
+    <circle cx="512" cy="250" r="58" stroke-width="46"/>
+    <!-- shank -->
+    <line x1="512" y1="308" x2="512" y2="700"/>
+    <!-- stock (crossbar) -->
+    <line x1="410" y1="372" x2="614" y2="372"/>
+    <!-- arms (bottom curve) -->
+    <path d="M296 580 Q512 802 728 580"/>
+  </g>
+
+  <!-- flukes (barbs) -->
+  <path d="M296 596 L250 532 L342 556 Z" fill="#FFFFFF"/>
+  <path d="M728 596 L774 532 L682 556 Z" fill="#FFFFFF"/>
+  <!-- amber accent on the crown (nods to 'needs attention') -->
+  <circle cx="512" cy="700" r="30" fill="#FBBF24"/>
+</svg>
