@@ -138,8 +138,9 @@ claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands
 - the badge shows counts per kind (zeros omitted). click it for the grouped list.
 - click a session row to focus it:
   - **iTerm / Ghostty** — selects the **exact tab** via the terminal's AppleScript dictionary (iTerm
-    matches by session id, Ghostty by working directory). first use asks to allow controlling that
-    app (Automation).
+    matches by session id; Ghostty by a surface id the hook captures by writing a one-shot title
+    marker to the session's own tty, so it's exact even when two sessions share a folder). first use
+    asks to allow controlling that app (Automation).
   - **VSCode / Cursor / JetBrains / Terminal / …** — raises the app and, best-effort, the window
     whose title matches the project. macOS doesn't expose integrated-terminal tabs, so this lands on
     the project window, not the exact split. first use prompts for an Accessibility grant.

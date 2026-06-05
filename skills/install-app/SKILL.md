@@ -11,10 +11,14 @@ persistence, clickable notifications, and Codex (which isn't a Claude Code plugi
 
 Run the bundled installer. It builds `Harbar.app`, loads the launch-at-login agent, installs
 `terminal-notifier`, copies the helper scripts to `~/.harbar`, and merges the Codex hooks — and it
-**skips** the Claude hooks (the plugin already provides them, so there are no duplicates):
+**skips** the Claude hooks (the plugin already provides them, so there are no duplicates).
+
+`$CLAUDE_PLUGIN_ROOT` isn't always exported into a tool shell, so resolve the plugin root with a
+fallback to the install cache before running it:
 
 ```bash
-HARBAR_SKIP_CLAUDE_HOOKS=1 bash "$CLAUDE_PLUGIN_ROOT/install.sh"
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/harbar/harbar/*/ 2>/dev/null | sort -V | tail -1)}"
+HARBAR_SKIP_CLAUDE_HOOKS=1 bash "${ROOT%/}/install.sh"
 ```
 
 After it finishes, tell the user:
@@ -25,4 +29,4 @@ After it finishes, tell the user:
    notch, free up menu bar space or use a manager like Ice.
 3. Restart any already-running Codex sessions so they pick up the new hooks.
 
-To remove everything later: `bash "$CLAUDE_PLUGIN_ROOT/uninstall.sh"` (then `/plugin uninstall harbar@harbar` for the Claude hooks).
+To remove everything later: `bash "${ROOT%/}/uninstall.sh"` (then `/plugin uninstall harbar@harbar` for the Claude hooks).

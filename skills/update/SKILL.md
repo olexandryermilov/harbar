@@ -15,10 +15,12 @@ If you haven't already, update the plugin first (run these yourself — they're 
 /plugin install harbar@harbar
 ```
 
-Then rebuild the native side (this skips the Claude hooks — the plugin provides them):
+Then rebuild the native side (this skips the Claude hooks — the plugin provides them).
+`$CLAUDE_PLUGIN_ROOT` isn't always exported into a tool shell, so resolve it with a cache fallback:
 
 ```bash
-HARBAR_SKIP_CLAUDE_HOOKS=1 bash "$CLAUDE_PLUGIN_ROOT/install.sh"
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/harbar/harbar/*/ 2>/dev/null | sort -V | tail -1)}"
+HARBAR_SKIP_CLAUDE_HOOKS=1 bash "${ROOT%/}/install.sh"
 ```
 
 After it finishes, tell the user:

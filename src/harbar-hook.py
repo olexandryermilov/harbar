@@ -93,20 +93,78 @@ def short_task(text):
     return (task[:27].rstrip() + "…") if len(task) > 28 else task
 
 
-def ghostty_surface_id():
-    """Ghostty exposes no per-surface env var, so at session start we ask its
-    AppleScript dictionary for the focused surface's stable id (the new tab is
-    focused then). lets focus.sh hit the exact tab even when two sessions share
-    a cwd. needs Automation permission; returns None if denied/unavailable."""
+def agent_tty(pid):
+    """controlling tty device of the agent process (e.g. /dev/ttys016), or None.
+    this is the one channel that uniquely identifies the hook's own surface."""
     try:
-        r = subprocess.run(
-            ["osascript", "-e",
-             'tell application "Ghostty" to get id of focused terminal of selected tab of front window'],
-            capture_output=True, text=True, timeout=3)
-        sid = r.stdout.strip()
-        return sid if (r.returncode == 0 and sid) else None
+        r = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=2)
+        t = r.stdout.strip()
+        if t and t not in ("??", "-"):
+            return t if t.startswith("/dev/") else "/dev/" + t
+    except Exception:
+        pass
+    return None
+
+
+def _ghostty_titles():
+    """snapshot of {surface id: current title} for all Ghostty terminals."""
+    s = ('tell application "Ghostty"\n set o to ""\n repeat with t in terminals\n'
+         '  try\n   set o to o & (id of t) & "\t" & (name of t) & linefeed\n'
+         '  end try\n end repeat\n return o\nend tell')
+    out = {}
+    try:
+        r = subprocess.run(["osascript", "-e", s], capture_output=True, text=True, timeout=4)
+        if r.returncode == 0:
+            for ln in r.stdout.splitlines():
+                if "\t" in ln:
+                    i, n = ln.split("\t", 1)
+                    out[i] = n
+    except Exception:
+        pass
+    return out
+
+
+def ghostty_surface_id(tty, sid, fallback):
+    """resolve the stable id of the Ghostty surface this hook runs in.
+
+    Ghostty exposes no per-surface env var and no tty on its AppleScript terminal
+    objects, so querying the *focused* surface is racy — two sessions opened in a
+    burst can capture the same id. instead: write a unique OSC-2 title marker to
+    our OWN controlling tty (so it lands on OUR surface), ask Ghostty which
+    terminal now carries that title, grab its stable id, then restore the prior
+    title. exact + race-free even when sessions share a cwd. needs Automation
+    permission. returns the id or None."""
+    if not tty:
+        return None
+    marker = f"harbar:{sid}"
+    before = _ghostty_titles()                         # for an exact restore later
+    try:
+        with open(tty, "w") as t:
+            t.write(f"\033]2;{marker}\007"); t.flush()
     except Exception:
         return None
+    found = None
+    try:
+        s = ('tell application "Ghostty"\n repeat with t in terminals\n  try\n'
+             f'   if (name of t) is "{marker}" then return (id of t)\n  end try\n'
+             ' end repeat\n return ""\nend tell')
+        r = subprocess.run(["osascript", "-e", s], capture_output=True, text=True, timeout=4)
+        out = r.stdout.strip()
+        found = out if (r.returncode == 0 and out) else None
+    except Exception:
+        found = None
+    # always restore (even on failure) so the tab never sticks on the marker;
+    # prefer the surface's pre-marker title, else the project name.
+    restore = before.get(found) if found else None
+    if not restore:
+        restore = fallback or ""
+    try:
+        with open(tty, "w") as t:
+            t.write(f"\033]2;{restore}\007"); t.flush()
+    except Exception:
+        pass
+    return found
 
 
 def find_agent_pid():
@@ -168,10 +226,6 @@ try:
         rec["status"] = "idle"
         if cwd:
             rec["branch"] = git_branch(cwd)
-        if disp_term == "Ghostty" and not rec.get("ghostty_id"):
-            gid = ghostty_surface_id()
-            if gid:
-                rec["ghostty_id"] = gid
     elif name == "UserPromptSubmit":
         rec["status"] = "working"
         rec.pop("note", None); rec.pop("kind", None)
@@ -198,6 +252,14 @@ try:
     elif name == "SessionEnd":            # claude only; codex has none -> pid prune
         f.unlink(missing_ok=True)
         sys.exit(0)
+
+    # capture the Ghostty surface id once (on start, or self-heal on next prompt
+    # if Automation was only granted later) so focus.sh hits the exact tab.
+    if (disp_term == "Ghostty" and not rec.get("ghostty_id")
+            and name in ("SessionStart", "UserPromptSubmit")):
+        gid = ghostty_surface_id(agent_tty(rec["agent_pid"]), sid, rec.get("project") or "")
+        if gid:
+            rec["ghostty_id"] = gid
 
     fd, tmp = tempfile.mkstemp(dir=str(HARBAR))         # atomic write
     with os.fdopen(fd, "w") as out:
