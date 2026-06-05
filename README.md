@@ -38,6 +38,33 @@ states: `working` (prompt submitted) · **needs input** split into 🔐 permissi
 📝 elicitation/form · 💤 idle-prompt · `idle` (turn done) · `error`. the label is `project@branch`
 plus the first few words of the latest prompt.
 
+## hooks it registers
+
+every hook calls `harbar-hook.py <agent> --notify`, which writes a per-session state file and never
+blocks the agent (silent stdout, always exits 0). Claude hooks are registered automatically by the
+plugin (option A) or merged into `~/.claude/settings.json` by `install.sh` (option B). Codex hooks
+live in `~/.codex/hooks.json` and must be trusted with `/hooks`.
+
+**Claude Code:**
+
+| hook | matcher | → |
+|------|---------|---|
+| `SessionStart` | — | idle (registers the session) |
+| `UserPromptSubmit` | — | working (+ captures git branch + prompt label) |
+| `Stop` | — | idle |
+| `StopFailure` | — | error |
+| `SessionEnd` | — | removes the tile |
+| `Notification` | `permission_prompt\|idle_prompt\|elicitation_dialog` | needs input (🔐 / 💤 / 📝) |
+
+**Codex** (subset — Codex has no `StopFailure` / `SessionEnd` / `Notification`):
+
+| hook | → |
+|------|---|
+| `SessionStart` | idle |
+| `UserPromptSubmit` | working |
+| `Stop` | idle |
+| `PermissionRequest` | needs input (🛑 approval) |
+
 ## requirements
 
 - macOS (uses AppKit, `osascript`, `launchctl`)
