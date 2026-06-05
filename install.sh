@@ -10,6 +10,7 @@ APP="$HOME/Applications/Harbar.app"
 LABEL="com.harbar.app"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 AUTOSTART="${HARBAR_AUTOSTART:-1}"
+SKIP_CLAUDE="${HARBAR_SKIP_CLAUDE_HOOKS:-0}"   # plugin install sets this — the plugin provides the Claude hooks
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33m !!\033[0m %s\n' "$1"; }
@@ -53,7 +54,9 @@ merge_for() {  # <agent> <config-file>
   python3 "$HARBAR/merge-hooks.py" "$f" "$agent"
 }
 merged=0
-if command -v claude >/dev/null || [ -e "$HOME/.claude/settings.json" ]; then
+if [ "$SKIP_CLAUDE" = "1" ]; then
+  info "skipping claude hooks (provided by the harbar plugin)"
+elif command -v claude >/dev/null || [ -e "$HOME/.claude/settings.json" ]; then
   info "merging claude hooks (~/.claude/settings.json)"; merge_for claude "$HOME/.claude/settings.json"; merged=1
 fi
 if command -v codex >/dev/null || [ -e "$HOME/.codex/hooks.json" ]; then

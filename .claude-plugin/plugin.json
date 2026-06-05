@@ -1,0 +1,15 @@
+{
+  "name": "harbar",
+  "version": "1.0.0",
+  "description": "A harbour for your fleet of agent sessions — menu bar monitor for concurrent Claude Code + Codex CLI sessions.",
+  "author": {
+    "name": "olexandryermilov",
+    "url": "https://github.com/olexandryermilov"
+  },
+  "homepage": "https://github.com/olexandryermilov/harbar",
+  "repository": "https://github.com/olexandryermilov/harbar",
+  "license": "MIT",
+  "keywords": ["menu-bar", "sessions", "claude-code", "codex", "monitor"],
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/"
+}

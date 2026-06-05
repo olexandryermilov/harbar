@@ -49,16 +49,33 @@ plus the first few words of the latest prompt.
 
 ## install
 
+two ways — pick **one** (don't run both; you'd get duplicate Claude hooks).
+
+### option A — Claude Code plugin (no clone)
+
+inside Claude Code:
+
+```
+/plugin marketplace add olexandryermilov/harbar
+/plugin install harbar@harbar
+/harbar:install-app
+```
+
+`/plugin install` auto-registers the Claude hooks (no editing `settings.json`). `/harbar:install-app`
+then builds `Harbar.app`, adds the login agent, installs `terminal-notifier`, and wires Codex.
+
+### option B — manual (clone)
+
 ```sh
-git clone <this-repo> && cd harbar
+git clone https://github.com/olexandryermilov/harbar && cd harbar
 ./install.sh
 ```
 
-it copies scripts to `~/.harbar`, builds `~/Applications/Harbar.app`, merges the harbar hooks into
-`~/.claude/settings.json` and/or `~/.codex/hooks.json` (your existing hooks are preserved, with a
-timestamped backup), and adds a launch-at-login agent. skip the login item: `HARBAR_AUTOSTART=0 ./install.sh`.
+copies scripts to `~/.harbar`, builds `~/Applications/Harbar.app`, merges the hooks into
+`~/.claude/settings.json` and/or `~/.codex/hooks.json` (existing hooks preserved, with a timestamped
+backup), and adds a launch-at-login agent. skip the login item: `HARBAR_AUTOSTART=0 ./install.sh`.
 
-then:
+### either way, then:
 
 1. **restart any running claude/codex sessions** so they pick up the new hooks.
 2. **codex only — trust the hooks.** codex silently ignores untrusted user hooks, so codex sessions
@@ -92,9 +109,8 @@ then:
 
 ## uninstall
 
-```sh
-./uninstall.sh
-```
+- **plugin:** `bash ~/path/to/harbar/uninstall.sh` (app/agent/codex) + `/plugin uninstall harbar@harbar` (Claude hooks).
+- **manual:** `./uninstall.sh`.
 
 removes the app, the login agent, `~/.harbar`, and the harbar hooks from your configs (other hooks
 kept). config backups (`*.harbar-bak-*`) are left in place.
@@ -102,13 +118,17 @@ kept). config backups (`*.harbar-bak-*`) are left in place.
 ## layout
 
 ```
-src/harbar-hook.py       hook dispatcher (writes session state)
-src/focus.sh             click-to-focus terminal
-src/merge-hooks.py       idempotent hook-config merge / removal
-src/Harbar.swift         the menu bar app (AppKit, single file)
-src/Harbar-Info.plist    app bundle metadata
-assets/icon.svg          the anchor logo
-install.sh / uninstall.sh
+.claude-plugin/marketplace.json   marketplace "harbar" (option A)
+.claude-plugin/plugin.json        plugin manifest
+hooks/hooks.json                  Claude hooks the plugin auto-registers (${CLAUDE_PLUGIN_ROOT}/src/harbar-hook.py)
+skills/install-app/SKILL.md       /harbar:install-app — builds the app, agent, codex
+src/harbar-hook.py                hook dispatcher (writes session state)
+src/focus.sh                      click-to-focus terminal
+src/merge-hooks.py                idempotent hook-config merge / removal
+src/Harbar.swift                  the menu bar app (AppKit, single file)
+src/Harbar-Info.plist             app bundle metadata
+assets/icon.svg                   the anchor logo
+install.sh / uninstall.sh         option B (manual) + shared by /harbar:install-app
 ```
 
 ## license
