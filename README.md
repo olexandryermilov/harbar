@@ -120,6 +120,10 @@ backup), and adds a launch-at-login agent. skip the login item: `HARBAR_AUTOSTAR
   - **VSCode / Cursor / JetBrains / Terminal / …** — raises the app and, best-effort, the window
     whose title matches the project. macOS doesn't expose integrated-terminal tabs, so this lands on
     the project window, not the exact split. first use prompts for an Accessibility grant.
+  - **Ghostty** — app activation only. clicking brings Ghostty to the front but **can't select the
+    specific tab or window**: Ghostty exposes no windows to macOS Accessibility and offers no
+    scripting/IPC, so there's nothing to target — it lands on whatever tab was last active. (verified:
+    Ghostty reports zero windows to both the Accessibility API and CoreGraphics' window list.)
 - a session entering needs-input pops a desktop notification (idle / permission / approval / form).
   with `terminal-notifier` installed, **clicking the notification focuses that terminal**; otherwise
   it's a plain banner.
@@ -133,6 +137,8 @@ backup), and adds a launch-at-login agent. skip the login item: `HARBAR_AUTOSTAR
   and can't be seen.
 - on a notched Mac with a full menu bar, macOS may hide the icon behind the notch — free up menu bar
   space or use a manager like Ice.
+- **Ghostty: click-to-focus is app-level only** (Ghostty isn't scriptable / not exposed to
+  Accessibility). exact tab focus works in terminals with a control API, e.g. iTerm.
 
 ## uninstall
 
