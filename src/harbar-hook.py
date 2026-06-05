@@ -93,6 +93,22 @@ def short_task(text):
     return (task[:27].rstrip() + "…") if len(task) > 28 else task
 
 
+def ghostty_surface_id():
+    """Ghostty exposes no per-surface env var, so at session start we ask its
+    AppleScript dictionary for the focused surface's stable id (the new tab is
+    focused then). lets focus.sh hit the exact tab even when two sessions share
+    a cwd. needs Automation permission; returns None if denied/unavailable."""
+    try:
+        r = subprocess.run(
+            ["osascript", "-e",
+             'tell application "Ghostty" to get id of focused terminal of selected tab of front window'],
+            capture_output=True, text=True, timeout=3)
+        sid = r.stdout.strip()
+        return sid if (r.returncode == 0 and sid) else None
+    except Exception:
+        return None
+
+
 def find_agent_pid():
     """the agent runs the hook via a transient shell, so os.getppid() is that
     shell (already dying). walk up the process tree to the real claude/codex
@@ -152,6 +168,10 @@ try:
         rec["status"] = "idle"
         if cwd:
             rec["branch"] = git_branch(cwd)
+        if disp_term == "Ghostty" and not rec.get("ghostty_id"):
+            gid = ghostty_surface_id()
+            if gid:
+                rec["ghostty_id"] = gid
     elif name == "UserPromptSubmit":
         rec["status"] = "working"
         rec.pop("note", None); rec.pop("kind", None)

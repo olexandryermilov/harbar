@@ -110,6 +110,27 @@ backup), and adds a launch-at-login agent. skip the login item: `HARBAR_AUTOSTAR
    (this writes `hooks.state.<key>.trusted_hash` to `~/.codex/config.toml`). re-run `/hooks` to
    re-trust if you ever change the hook commands. claude needs no trust step.
 
+## updating
+
+**plugin (option A):**
+```
+/plugin marketplace update harbar     # pull the latest from the marketplace repo
+/plugin install harbar@harbar          # reinstall — picks up the new version's Claude hooks
+/harbar:update                         # rebuild the native app + Codex hooks + login agent
+```
+
+**manual (option B):**
+```sh
+cd harbar && git pull && ./install.sh
+```
+
+the plugin auto-updates the **Claude hooks** on reinstall; the native **Harbar.app + Codex hooks +
+login agent** are rebuilt by `/harbar:update` (or `/harbar:install-app`). then restart your
+claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands changed.
+
+> maintainers: bump `version` in **both** `.claude-plugin/plugin.json` and the plugin entry in
+> `.claude-plugin/marketplace.json` on each release — that's how clients detect a new version.
+
 ## usage
 
 - **tracking works in any terminal or IDE** — iTerm, Terminal, VSCode, Cursor, JetBrains, WezTerm,
