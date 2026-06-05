@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "harbar",
+  "description": "Harbar — a harbour for your fleet of agent sessions.",
+  "owner": {
+    "name": "olexandryermilov",
+    "url": "https://github.com/olexandryermilov"
+  },
+  "plugins": [
+    {
+      "name": "harbar",
+      "source": "./",
+      "description": "Menu bar monitor for concurrent Claude Code + Codex CLI sessions. Auto-registers the Claude hooks; run /harbar:install-app for the native app + Codex.",
+      "version": "1.0.0",
+      "category": "monitoring",
+      "keywords": ["menu-bar", "sessions", "claude-code", "codex", "monitor"]
+    }
+  ]
+}
