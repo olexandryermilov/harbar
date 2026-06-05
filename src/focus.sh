@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: MIT
 # focus.sh <agent> <session_id> — bring a session's terminal/IDE to the front.
 # iTerm + Ghostty: select the EXACT tab via the terminal's AppleScript dictionary
-#   (iTerm by session id, Ghostty by working directory). first use asks to allow
-#   controlling that app (Automation).
+#   (iTerm by session id; Ghostty by the surface id the hook captured, with a
+#   working-directory fallback). first use asks to allow controlling that app
+#   (Automation).
 # everything else (VSCode, Cursor, JetBrains, Terminal, …): raise the app and,
 #   best-effort, the window whose title matches the project — integrated-terminal
 #   tabs aren't scriptable, so this lands on the project window. needs Accessibility.
