@@ -16,6 +16,7 @@ term=$(field terminal)
 app=$(field focus_app)
 proj=$(field project)
 cwd=$(field cwd)
+gid=$(field ghostty_id)
 iterm=$(field iterm_session_id)
 uuid="${iterm##*:}"   # strip the w0t1p0: prefix -> the UUID iTerm's AppleScript 'id' exposes
 
@@ -40,10 +41,21 @@ end tell
 EOF
     ;;
   Ghostty)
-    # Ghostty ships a real AppleScript dictionary; focus the surface whose working
-    # directory matches this session's cwd (brings its window + tab to the front).
+    # Ghostty ships a real AppleScript dictionary. focus the surface by its stable
+    # id (captured at session start — exact even when sessions share a cwd); fall
+    # back to matching the working directory, then to just activating the app.
     /usr/bin/osascript <<EOF 2>/dev/null
 tell application "Ghostty"
+  if "$gid" is not "" then
+    repeat with t in terminals
+      try
+        if (id of t) is "$gid" then
+          focus t
+          return
+        end if
+      end try
+    end repeat
+  end if
   repeat with t in terminals
     try
       if (working directory of t) is "$cwd" then
