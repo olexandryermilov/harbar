@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: python tests + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: validate JSON manifests
+        run: |
+          python - <<'PY'
+          import json
+          for f in ["hooks/hooks.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"]:
+              json.load(open(f))
+              print("ok:", f)
+          PY
+      - name: shell syntax
+        run: bash -n src/focus.sh && bash -n install.sh && bash -n uninstall.sh
+
+  build-app:
+    name: build menu bar app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: compile Harbar.swift
+        run: swiftc -O -framework AppKit src/Harbar.swift -o /tmp/Harbar && echo "built ok"
