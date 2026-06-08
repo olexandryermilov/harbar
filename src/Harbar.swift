@@ -18,6 +18,7 @@ struct Session {
     let note: String?
     let branch: String?
     let label: String?
+    let activity: String?
     let lastActivity: Double
 
     var displayName: String {
@@ -52,6 +53,38 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var kindLabel: [String: String] { Dictionary(uniqueKeysWithValues: kinds.map { ($0.0, $0.2) }) }
     var kindOrder: [String: Int] { Dictionary(uniqueKeysWithValues: kinds.enumerated().map { ($1.0, $0) }) }
 
+    // re-nag: a still-blocked session fires no new hook events, so the app re-pings
+    // it on this interval until it's unblocked (the hook owns the first ping at 0m).
+    // configurable from the menu; persisted in UserDefaults (key "renagSeconds",
+    // 0 = off). power users: `defaults write com.harbar.app renagSeconds <n>`.
+    let renagPresets: [(String, Double)] = [
+        ("off", 0), ("1 min", 60), ("2 min", 120), ("5 min", 300),
+        ("10 min", 600), ("15 min", 900), ("30 min", 1800),
+    ]
+    var renagSeconds: Double {
+        get { UserDefaults.standard.object(forKey: "renagSeconds") as? Double ?? 300 }
+        set { UserDefaults.standard.set(newValue, forKey: "renagSeconds") }
+    }
+    var lastNagged: [String: Date] = [:]                  // "agent-sid" -> last re-ping
+    let kindMessage: [String: String] = [
+        "permission_prompt": "needs permission",
+        "idle_prompt": "waiting for your input",
+        "elicitation_dialog": "needs form input",
+        "codex_approval": "needs approval",
+    ]
+    lazy var tnPath: String? = {                          // terminal-notifier, for clickable banners
+        for c in ["/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier"]
+        where FileManager.default.isExecutableFile(atPath: c) { return c }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        p.arguments = ["terminal-notifier"]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        try? p.run(); p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (out?.isEmpty == false) ? out : nil
+    }()
+
     func loadSessions() -> [Session] {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
@@ -79,6 +112,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 note: obj["note"] as? String,
                 branch: obj["branch"] as? String,
                 label: obj["label"] as? String,
+                activity: obj["activity"] as? String,
                 lastActivity: last))
         }
         return out
@@ -88,6 +122,13 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let k = s.kind, !k.isEmpty { return k }
         if s.agent == "codex" { return "codex_approval" }       // backward-compat
         return (s.note?.isEmpty == false) ? s.note! : "other"
+    }
+
+    // trailing detail for a row: the needs-input note if any, else what a working
+    // session is currently doing (PreToolUse activity).
+    func detailStr(_ s: Session) -> String {
+        let d = (s.note?.isEmpty == false) ? s.note! : (s.activity ?? "")
+        return d.isEmpty ? "" : "  ·  \(d)"
     }
 
     func agoStr(_ t: Double) -> String {
@@ -128,7 +169,49 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func tick() {
-        statusItem.button?.title = titleString(loadSessions())
+        let sessions = loadSessions()
+        statusItem.button?.title = titleString(sessions)
+        checkRenags(sessions)
+    }
+
+    // re-ping every still-blocked session on `renagInterval`; reuse the hook's
+    // notification group per session so the banner updates in place (no stacking)
+    // and stays clickable -> focus.sh jumps to that terminal.
+    func checkRenags(_ sessions: [Session]) {
+        let interval = renagSeconds
+        if interval <= 0 { lastNagged.removeAll(); return }        // re-nag disabled
+        let now = Date()
+        let epoch = now.timeIntervalSince1970
+        var live = Set<String>()
+        for s in sessions where s.status == "needs_input" {
+            let key = "\(s.agent)-\(s.sessionId)"
+            live.insert(key)
+            let waited = epoch - s.lastActivity
+            if waited < interval { continue }                      // hook owns the first ping
+            if let last = lastNagged[key], now.timeIntervalSince(last) < interval { continue }
+            let friendly = kindMessage[kindOf(s)] ?? "needs your input"
+            notify(title: "⏳ still waiting · \(s.project) · \(s.terminal)",
+                   message: "\(friendly) — \(Int(waited / 60))m",
+                   agent: s.agent, sid: s.sessionId)
+            lastNagged[key] = now
+        }
+        lastNagged = lastNagged.filter { live.contains($0.key) }   // forget unblocked sessions
+    }
+
+    func notify(title: String, message: String, agent: String, sid: String) {
+        let group = "harbar-\(agent)-\(sid)"
+        let p = Process()
+        if let tn = tnPath {
+            p.executableURL = URL(fileURLWithPath: tn)
+            p.arguments = ["-title", title, "-message", message, "-sound", "Glass",
+                           "-group", group, "-execute", "\(focusScript) \(agent) \(sid)"]
+        } else {
+            let m = message.replacingOccurrences(of: "\"", with: "'")
+            let t = title.replacingOccurrences(of: "\"", with: "'")
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", "display notification \"\(m)\" with title \"\(t)\" sound name \"Glass\""]
+        }
+        try? p.run()
     }
 
     // MARK: menu (rebuilt lazily on open so it never disrupts an open menu)
@@ -154,6 +237,26 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addIf(menu, "✓ IDLE", sessions.filter { $0.status == "idle" })
 
         menu.addItem(.separator())
+
+        let cur = renagSeconds
+        let renag = NSMenuItem(title: "Re-nag: \(renagLabel(cur))", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        var matched = false
+        for (label, secs) in renagPresets {
+            let mi = NSMenuItem(title: label, action: #selector(setRenag(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = secs
+            if abs(secs - cur) < 0.5 { mi.state = .on; matched = true }
+            sub.addItem(mi)
+        }
+        if !matched {           // a custom value set via `defaults write`
+            let mi = NSMenuItem(title: "custom: \(renagLabel(cur))", action: nil, keyEquivalent: "")
+            mi.state = .on; mi.isEnabled = false
+            sub.addItem(mi)
+        }
+        renag.submenu = sub
+        menu.addItem(renag)
+
         let r = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
         r.target = self
         menu.addItem(r)
@@ -171,8 +274,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.isEnabled = false
         menu.addItem(h)
         for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
-            let note = (s.note?.isEmpty == false) ? "  ·  \(s.note!)" : ""
-            let title = "  \(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(note)  ·  \(agoStr(s.lastActivity))"
+            let title = "  \(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detailStr(s))  ·  \(agoStr(s.lastActivity))"
             let it = NSMenuItem(title: title, action: #selector(focus(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = [s.agent, s.sessionId]
@@ -186,6 +288,19 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [focusScript, arr[0], arr[1]]
         try? p.run()
+    }
+
+    @objc func setRenag(_ sender: NSMenuItem) {
+        guard let s = sender.representedObject as? Double else { return }
+        renagSeconds = s
+        lastNagged.removeAll()        // restart the cadence from the new setting
+    }
+
+    func renagLabel(_ s: Double) -> String {
+        if s <= 0 { return "off" }
+        if s < 90 { return "\(Int(s))s" }
+        let m = Int(s) / 60, rem = Int(s) % 60
+        return rem == 0 ? "\(m) min" : "\(m)m\(rem)s"
     }
 
     @objc func refreshNow() { tick() }
@@ -202,8 +317,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         func sect(_ header: String, _ rows: [Session]) {
             print("\(header) (\(rows.count))")
             for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
-                let note = (s.note?.isEmpty == false) ? "  ·  \(s.note!)" : ""
-                print("  \(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(note)  ·  \(agoStr(s.lastActivity))")
+                print("  \(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detailStr(s))  ·  \(agoStr(s.lastActivity))")
             }
         }
         if sessions.isEmpty { print("no sessions") }

@@ -36,7 +36,12 @@ pid).
 
 states: `working` (prompt submitted) · **needs input** split into 🔐 permission · 🛑 codex approval ·
 📝 elicitation/form · 💤 idle-prompt · `idle` (turn done) · `error`. the label is `project@branch`
-plus the first few words of the latest prompt.
+plus the first few words of the latest prompt; a working row also shows the **current tool**
+(`editing focus.sh`, `$ git`, `searching`, …) so the panel stays useful even when nothing's blocked.
+
+**re-nag:** a session that's been blocked on input keeps getting a reminder banner on an interval
+(set it from the menu — `off`, 1, 2, 5, 10, 15, 30 min; default 5), so a stuck agent never goes
+silent if you miss the first ping.
 
 ## hooks it registers
 
@@ -51,6 +56,7 @@ live in `~/.codex/hooks.json` and must be trusted with `/hooks`.
 |------|---------|---|
 | `SessionStart` | — | idle (registers the session) |
 | `UserPromptSubmit` | — | working (+ captures git branch + prompt label) |
+| `PreToolUse` | — | working (+ shows the current tool: `editing X`, `$ git`, `searching`, …) |
 | `Stop` | — | idle |
 | `StopFailure` | — | error |
 | `SessionEnd` | — | removes the tile |
@@ -62,6 +68,7 @@ live in `~/.codex/hooks.json` and must be trusted with `/hooks`.
 |------|---|
 | `SessionStart` | idle |
 | `UserPromptSubmit` | working |
+| `PreToolUse` | working (+ current tool) |
 | `Stop` | idle |
 | `PermissionRequest` | needs input (🛑 approval) |
 
@@ -146,7 +153,10 @@ claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands
     the project window, not the exact split. first use prompts for an Accessibility grant.
 - a session entering needs-input pops a desktop notification (idle / permission / approval / form).
   with `terminal-notifier` installed, **clicking the notification focuses that terminal**; otherwise
-  it's a plain banner.
+  it's a plain banner. if the banners never show, grant **terminal-notifier** notification
+  permission in System Settings → Notifications (it can get reset by Homebrew updates).
+- still blocked? the **re-nag** re-pings on the interval set in the menu (`Re-nag` submenu). power
+  users: `defaults write com.harbar.app renagSeconds <n>` (0 = off).
 - ⌘R refresh, ⌘Q quit.
 
 ## caveats
@@ -180,6 +190,15 @@ src/Harbar.swift                  the menu bar app (AppKit, single file)
 src/Harbar-Info.plist             app bundle metadata
 assets/icon.svg                   the anchor logo
 install.sh / uninstall.sh         option B (manual) + shared by /harbar:install-app
+tests/                            unit tests (stdlib unittest): hook state machine + merge logic
+.github/workflows/ci.yml          CI: runs tests + lint on Linux, compiles the app on macOS
+```
+
+## development
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py'   # run the test suite (no deps)
+swiftc -O -framework AppKit src/Harbar.swift -o /tmp/Harbar   # compile-check the app
 ```
 
 ## license

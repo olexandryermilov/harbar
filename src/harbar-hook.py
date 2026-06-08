@@ -93,6 +93,42 @@ def short_task(text):
     return (task[:27].rstrip() + "…") if len(task) > 28 else task
 
 
+def tool_activity(ev):
+    """a short human verb for what a working session is doing right now, from a
+    PreToolUse/PostToolUse payload — e.g. '$ git', 'editing focus.sh', 'reading
+    README'. tool_name + tool_input shapes are stable for claude; codex tools
+    fall through to a generic 'running <tool>'."""
+    tool = (ev.get("tool_name") or ev.get("tool") or "").strip()
+    ti = ev.get("tool_input")
+    ti = ti if isinstance(ti, dict) else {}
+    base = lambda p: (os.path.basename(str(p or "").rstrip("/")) or str(p or ""))
+    t = tool.lower()
+    act = None
+    if t == "bash" or "shell" in t or t == "exec":
+        cmd = (ti.get("command") or ti.get("cmd") or "").strip()
+        first = cmd.split()[0] if cmd else ""
+        act = f"$ {first}" if first else "running command"
+    elif t in ("edit", "multiedit", "write", "notebookedit", "update", "create", "apply_patch"):
+        f = base(ti.get("file_path") or ti.get("path") or ti.get("notebook_path"))
+        act = f"editing {f}" if f else "editing file"
+    elif t == "read":
+        f = base(ti.get("file_path") or ti.get("path"))
+        act = f"reading {f}" if f else "reading file"
+    elif t in ("grep", "glob", "search"):
+        act = "searching"
+    elif t == "task":
+        act = "running subagent"
+    elif t in ("webfetch", "fetch"):
+        act = "fetching url"
+    elif t == "websearch":
+        act = "web search"
+    elif tool:
+        act = f"running {tool}"
+    if act and len(act) > 24:
+        act = act[:23].rstrip() + "…"
+    return act
+
+
 def agent_tty(pid):
     """controlling tty device of the agent process (e.g. /dev/ttys016), or None.
     this is the one channel that uniquely identifies the hook's own surface."""
@@ -201,9 +237,11 @@ def find_agent_pid():
     return fallback
 
 
-try:
+def process(ev, agent, notify=False):
+    """apply one hook event to its session state file. pure-ish: only touches
+    ~/.harbar/sessions and (optionally) fires a notification. returns the written
+    record, or None if the event removed the session (SessionEnd)."""
     HARBAR.mkdir(parents=True, exist_ok=True)
-    ev = json.load(sys.stdin)
     sid = ev["session_id"]
     f = HARBAR / f"{agent}-{sid}.json"
     prev = json.loads(f.read_text()) if f.exists() else {}
@@ -228,7 +266,7 @@ try:
             rec["branch"] = git_branch(cwd)
     elif name == "UserPromptSubmit":
         rec["status"] = "working"
-        rec.pop("note", None); rec.pop("kind", None)
+        rec.pop("note", None); rec.pop("kind", None); rec.pop("activity", None)
         if cwd:
             rec["branch"] = git_branch(cwd)
         t = short_task(ev.get("prompt") or ev.get("user_prompt") or ev.get("message"))
@@ -236,7 +274,15 @@ try:
             rec["label"] = t                     # short label = first words of the prompt
     elif name == "Stop":
         rec["status"] = "idle"
+        rec.pop("note", None); rec.pop("kind", None); rec.pop("activity", None)
+    elif name in ("PreToolUse", "PostToolUse"):     # show what a working session is doing
+        rec["status"] = "working"
         rec.pop("note", None); rec.pop("kind", None)
+        act = tool_activity(ev)
+        if act:
+            rec["activity"] = act
+        elif name == "PostToolUse":
+            rec.pop("activity", None)
     elif name == "StopFailure":
         rec["status"] = "error"
         rec["note"] = ev.get("error_type", "error")
@@ -251,7 +297,7 @@ try:
             rec["note"] = ev.get("tool_name") or nt
     elif name == "SessionEnd":            # claude only; codex has none -> pid prune
         f.unlink(missing_ok=True)
-        sys.exit(0)
+        return None
 
     # capture the Ghostty surface id once (on start, or self-heal on next prompt
     # if Automation was only granted later) so focus.sh hits the exact tab.
@@ -267,7 +313,7 @@ try:
     os.replace(tmp, f)
 
     # notify once per fresh transition into a needs-input kind, with friendly text
-    if NOTIFY and rec["status"] == "needs_input" and prev.get("kind") != rec.get("kind"):
+    if notify and rec["status"] == "needs_input" and prev.get("kind") != rec.get("kind"):
         kind = rec.get("kind", "")
         base = NOTIFY_MSG.get(kind, "needs your input")
         tool = rec.get("note")
@@ -282,6 +328,16 @@ try:
             m, t = base.replace('"', "'"), title.replace('"', "'")
             run("osascript", "-e",
                 f'display notification "{m}" with title "{t}" sound name "Glass"')
-except Exception:
-    pass
-sys.exit(0)
+    return rec
+
+
+def main():
+    try:
+        process(json.load(sys.stdin), agent, notify=NOTIFY)
+    except Exception:
+        pass
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

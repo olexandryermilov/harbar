@@ -28,6 +28,7 @@ SPECS = {
     "claude": [
         ("SessionStart", None, f"{hook} claude --notify"),
         ("UserPromptSubmit", None, f"{hook} claude --notify"),
+        ("PreToolUse", None, f"{hook} claude"),
         ("Stop", None, f"{hook} claude --notify"),
         ("StopFailure", None, f"{hook} claude --notify"),
         ("SessionEnd", None, f"{hook} claude --notify"),
@@ -36,6 +37,7 @@ SPECS = {
     "codex": [
         ("SessionStart", None, f"{hook} codex --notify"),
         ("UserPromptSubmit", None, f"{hook} codex --notify"),
+        ("PreToolUse", None, f"{hook} codex"),
         ("Stop", None, f"{hook} codex --notify"),
         ("PermissionRequest", None, f"{hook} codex --notify"),
     ],
