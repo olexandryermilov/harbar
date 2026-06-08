@@ -38,6 +38,9 @@ func isAlive(_ pid: Int) -> Bool {
 final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/sessions")
     let focusScript = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/focus.sh")
+    // snooze state: {"<agent>-<sid>": "<kind>"} — a session is muted while it stays
+    // in that kind; reminders resume (and the snooze clears) once the kind changes.
+    let snoozePath = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/snoozed.json")
     var statusItem: NSStatusItem!
     var timer: Timer?
 
@@ -79,6 +82,20 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return remindDefaults[kind] ?? 300
     }
     var lastReminded: [String: Date] = [:]                // "agent-sid" -> last reminder
+
+    func loadSnoozed() -> [String: String] {
+        guard let d = FileManager.default.contents(atPath: snoozePath),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: String]
+        else { return [:] }
+        return o
+    }
+    func saveSnoozed(_ m: [String: String]) {
+        if let d = try? JSONSerialization.data(withJSONObject: m) {
+            try? d.write(to: URL(fileURLWithPath: snoozePath))
+        }
+    }
+    func sessionKey(_ s: Session) -> String { "\(s.agent)-\(s.sessionId)" }
+    func isSnoozed(_ s: Session) -> Bool { loadSnoozed()[sessionKey(s)] == kindOf(s) }
     let kindMessage: [String: String] = [
         "permission_prompt": "needs permission",
         "idle_prompt": "waiting for your input",
@@ -193,12 +210,20 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func checkReminders(_ sessions: [Session]) {
         let now = Date()
         let epoch = now.timeIntervalSince1970
+        var snoozed = loadSnoozed()
+        var snoozeChanged = false
         var live = Set<String>()
+        var blocked = Set<String>()
         for s in sessions where s.status == "needs_input" {
             let kind = kindOf(s)
+            let key = "\(s.agent)-\(s.sessionId)"
+            blocked.insert(key)
+            // a snooze only holds while the session stays in the kind it was snoozed in;
+            // once the group changes, drop it (the hook already re-notified for the new kind).
+            if let sk = snoozed[key], sk != kind { snoozed.removeValue(forKey: key); snoozeChanged = true }
             let interval = remindInterval(for: kind)
             if interval <= 0 { continue }                          // reminders off for this kind
-            let key = "\(s.agent)-\(s.sessionId)"
+            if snoozed[key] == kind { continue }                   // snoozed -> stay quiet
             live.insert(key)
             let waited = epoch - s.lastActivity
             if waited < interval { continue }                      // hook owns the first ping
@@ -210,6 +235,9 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastReminded[key] = now
         }
         lastReminded = lastReminded.filter { live.contains($0.key) }   // forget unblocked sessions
+        // drop snoozes whose session is no longer blocked (a fresh block re-notifies)
+        for k in snoozed.keys where !blocked.contains(k) { snoozed.removeValue(forKey: k); snoozeChanged = true }
+        if snoozeChanged { saveSnoozed(snoozed) }
     }
 
     func notify(title: String, message: String, agent: String, sid: String) {
@@ -255,7 +283,12 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(it)
         }
         for k in orderedNeedsKinds(byKind) {
-            addSection(menu, "\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!)
+            addSection(menu, "\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!, snoozable: true)
+        }
+        if !needs.isEmpty {
+            let hint = NSMenuItem(title: "   ⌥-click a session to snooze it", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
         }
         addIf(menu, "▸ WORKING", sessions.filter { $0.status == "working" })
         addIf(menu, "⚠ ERROR", sessions.filter { $0.status == "error" })
@@ -302,16 +335,32 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !rows.isEmpty { addSection(menu, header, rows) }
     }
 
-    func addSection(_ menu: NSMenu, _ header: String, _ rows: [Session]) {
+    func addSection(_ menu: NSMenu, _ header: String, _ rows: [Session], snoozable: Bool = false) {
         let h = NSMenuItem(title: "\(header) (\(rows.count))", action: nil, keyEquivalent: "")
         h.isEnabled = false
         menu.addItem(h)
         for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
-            let title = "  \(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detailStr(s))  ·  \(agoStr(s.lastActivity))"
+            let snoozed = snoozable && isSnoozed(s)
+            let mark = snoozed ? "😴 " : ""
+            let title = "  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detailStr(s))  ·  \(agoStr(s.lastActivity))"
+            // primary row: a single click always focuses the terminal
             let it = NSMenuItem(title: title, action: #selector(focus(_:)), keyEquivalent: "")
             it.target = self
+            it.keyEquivalentModifierMask = []
             it.representedObject = [s.agent, s.sessionId]
             menu.addItem(it)
+            if snoozable {
+                // ⌥-alternate: hold Option and the row becomes a snooze/resume toggle
+                let alt = NSMenuItem(
+                    title: snoozed ? "  🔔 \(s.displayName) — resume reminders"
+                                   : "  😴 \(s.displayName) — snooze until it changes group",
+                    action: #selector(toggleSnooze(_:)), keyEquivalent: "")
+                alt.target = self
+                alt.isAlternate = true
+                alt.keyEquivalentModifierMask = .option
+                alt.representedObject = [s.agent, s.sessionId]
+                menu.addItem(alt)
+            }
         }
     }
 
@@ -321,6 +370,21 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [focusScript, arr[0], arr[1]]
         try? p.run()
+    }
+
+    @objc func toggleSnooze(_ sender: NSMenuItem) {
+        guard let arr = sender.representedObject as? [String], arr.count == 2,
+              let s = loadSessions().first(where: { $0.agent == arr[0] && $0.sessionId == arr[1] })
+        else { return }
+        let key = sessionKey(s), kind = kindOf(s)
+        var snoozed = loadSnoozed()
+        if snoozed[key] == kind {
+            snoozed.removeValue(forKey: key)              // resume
+        } else {
+            snoozed[key] = kind                           // mute this session in this kind
+            lastReminded.removeValue(forKey: key)
+        }
+        saveSnoozed(snoozed)
     }
 
     @objc func setReminder(_ sender: NSMenuItem) {

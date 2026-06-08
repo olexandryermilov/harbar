@@ -158,6 +158,10 @@ claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands
   permission in System Settings → Notifications (it can get reset by Homebrew updates).
 - still blocked? **reminders** re-ping on the per-kind interval set in the menu (`Reminders`
   submenu — one entry per kind). power users: `defaults write com.harbar.app "remind.permission_prompt" <n>` (0 = off).
+- **snooze** a noisy session: open its row → `snooze (until it changes group)`. it goes quiet (no
+  more reminders) while it stays in that kind, but if it shifts groups (e.g. idle-prompt →
+  permission) you get notified again and the snooze clears. a snoozed row is marked 😴; `resume
+  reminders` un-snoozes.
 - ⌘R refresh, ⌘Q quit.
 
 ## caveats
