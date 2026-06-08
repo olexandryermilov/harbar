@@ -39,9 +39,10 @@ states: `working` (prompt submitted) · **needs input** split into 🔐 permissi
 plus the first few words of the latest prompt; a working row also shows the **current tool**
 (`editing focus.sh`, `$ git`, `searching`, …) so the panel stays useful even when nothing's blocked.
 
-**re-nag:** a session that's been blocked on input keeps getting a reminder banner on an interval
-(set it from the menu — `off`, 1, 2, 5, 10, 15, 30 min; default 5), so a stuck agent never goes
-silent if you miss the first ping.
+**reminders:** a session that's been blocked on input keeps getting a reminder banner on an
+interval, so a stuck agent never goes silent if you miss the first ping. the interval is set
+**per kind** from the menu (`off`, 1, 2, 5, 10, 15, 30 min) — defaults: permission / approval /
+form = 5 min, idle prompt = 15 min.
 
 ## hooks it registers
 
@@ -155,8 +156,8 @@ claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands
   with `terminal-notifier` installed, **clicking the notification focuses that terminal**; otherwise
   it's a plain banner. if the banners never show, grant **terminal-notifier** notification
   permission in System Settings → Notifications (it can get reset by Homebrew updates).
-- still blocked? the **re-nag** re-pings on the interval set in the menu (`Re-nag` submenu). power
-  users: `defaults write com.harbar.app renagSeconds <n>` (0 = off).
+- still blocked? **reminders** re-ping on the per-kind interval set in the menu (`Reminders`
+  submenu — one entry per kind). power users: `defaults write com.harbar.app "remind.permission_prompt" <n>` (0 = off).
 - ⌘R refresh, ⌘Q quit.
 
 ## caveats

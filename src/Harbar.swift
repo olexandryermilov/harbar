@@ -53,19 +53,32 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var kindLabel: [String: String] { Dictionary(uniqueKeysWithValues: kinds.map { ($0.0, $0.2) }) }
     var kindOrder: [String: Int] { Dictionary(uniqueKeysWithValues: kinds.enumerated().map { ($1.0, $0) }) }
 
-    // re-nag: a still-blocked session fires no new hook events, so the app re-pings
-    // it on this interval until it's unblocked (the hook owns the first ping at 0m).
-    // configurable from the menu; persisted in UserDefaults (key "renagSeconds",
-    // 0 = off). power users: `defaults write com.harbar.app renagSeconds <n>`.
-    let renagPresets: [(String, Double)] = [
+    // reminders: a still-blocked session fires no new hook events, so the app
+    // re-reminds on an interval until it's unblocked (the hook owns the first ping
+    // at 0m). the interval is configurable PER KIND from the menu, persisted in
+    // UserDefaults under "remind.<kind>" (0 = off). the legacy global "renagSeconds"
+    // (shipped in 1.2.0) is still honored as the fallback for any untuned kind.
+    // power users: defaults write com.harbar.app "remind.permission_prompt" 600
+    let remindPresets: [(String, Double)] = [
         ("off", 0), ("1 min", 60), ("2 min", 120), ("5 min", 300),
         ("10 min", 600), ("15 min", 900), ("30 min", 1800),
     ]
-    var renagSeconds: Double {
-        get { UserDefaults.standard.object(forKey: "renagSeconds") as? Double ?? 300 }
-        set { UserDefaults.standard.set(newValue, forKey: "renagSeconds") }
+    // per-kind defaults: prompts are less urgent than permission/approval gates.
+    let remindDefaults: [String: Double] = [
+        "permission_prompt": 300, "codex_approval": 300,
+        "elicitation_dialog": 300, "idle_prompt": 900,
+    ]
+    let remindKindName: [String: String] = [
+        "permission_prompt": "permission", "codex_approval": "codex approval",
+        "elicitation_dialog": "form", "idle_prompt": "idle prompt",
+    ]
+    // interval for a kind: its own setting, else the legacy global, else the default.
+    func remindInterval(for kind: String) -> Double {
+        if let v = UserDefaults.standard.object(forKey: "remind.\(kind)") as? Double { return v }
+        if let g = UserDefaults.standard.object(forKey: "renagSeconds") as? Double { return g }
+        return remindDefaults[kind] ?? 300
     }
-    var lastNagged: [String: Date] = [:]                  // "agent-sid" -> last re-ping
+    var lastReminded: [String: Date] = [:]                // "agent-sid" -> last reminder
     let kindMessage: [String: String] = [
         "permission_prompt": "needs permission",
         "idle_prompt": "waiting for your input",
@@ -171,34 +184,46 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func tick() {
         let sessions = loadSessions()
         statusItem.button?.title = titleString(sessions)
-        checkRenags(sessions)
+        checkReminders(sessions)
     }
 
-    // re-ping every still-blocked session on `renagInterval`; reuse the hook's
+    // remind on every still-blocked session on its kind's interval; reuse the hook's
     // notification group per session so the banner updates in place (no stacking)
     // and stays clickable -> focus.sh jumps to that terminal.
-    func checkRenags(_ sessions: [Session]) {
-        let interval = renagSeconds
-        if interval <= 0 { lastNagged.removeAll(); return }        // re-nag disabled
+    func checkReminders(_ sessions: [Session]) {
         let now = Date()
         let epoch = now.timeIntervalSince1970
         var live = Set<String>()
         for s in sessions where s.status == "needs_input" {
+            let kind = kindOf(s)
+            let interval = remindInterval(for: kind)
+            if interval <= 0 { continue }                          // reminders off for this kind
             let key = "\(s.agent)-\(s.sessionId)"
             live.insert(key)
             let waited = epoch - s.lastActivity
             if waited < interval { continue }                      // hook owns the first ping
-            if let last = lastNagged[key], now.timeIntervalSince(last) < interval { continue }
-            let friendly = kindMessage[kindOf(s)] ?? "needs your input"
+            if let last = lastReminded[key], now.timeIntervalSince(last) < interval { continue }
+            let friendly = kindMessage[kind] ?? "needs your input"
             notify(title: "⏳ still waiting · \(s.project) · \(s.terminal)",
                    message: "\(friendly) — \(Int(waited / 60))m",
                    agent: s.agent, sid: s.sessionId)
-            lastNagged[key] = now
+            lastReminded[key] = now
         }
-        lastNagged = lastNagged.filter { live.contains($0.key) }   // forget unblocked sessions
+        lastReminded = lastReminded.filter { live.contains($0.key) }   // forget unblocked sessions
     }
 
     func notify(title: String, message: String, agent: String, sid: String) {
+        // opt-in debug trail (off by default): set HARBAR_REMIND_LOG=1 to append every
+        // fired reminder to ~/.harbar/remind-debug.log — makes the timing testable.
+        if ProcessInfo.processInfo.environment["HARBAR_REMIND_LOG"] != nil {
+            let line = "\(Int(Date().timeIntervalSince1970)) \(agent)-\(sid) :: \(title) — \(message)\n"
+            let lp = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/remind-debug.log")
+            if let d = line.data(using: .utf8) {
+                if let fh = FileHandle(forWritingAtPath: lp) {
+                    fh.seekToEndOfFile(); fh.write(d); try? fh.close()
+                } else { FileManager.default.createFile(atPath: lp, contents: d) }
+            }
+        }
         let group = "harbar-\(agent)-\(sid)"
         let p = Process()
         if let tn = tnPath {
@@ -238,24 +263,32 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let cur = renagSeconds
-        let renag = NSMenuItem(title: "Re-nag: \(renagLabel(cur))", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        var matched = false
-        for (label, secs) in renagPresets {
-            let mi = NSMenuItem(title: label, action: #selector(setRenag(_:)), keyEquivalent: "")
-            mi.target = self
-            mi.representedObject = secs
-            if abs(secs - cur) < 0.5 { mi.state = .on; matched = true }
-            sub.addItem(mi)
+        // Reminders ▸ one submenu per needs-input kind, each with the interval presets
+        let reminders = NSMenuItem(title: "Reminders", action: nil, keyEquivalent: "")
+        let rsub = NSMenu()
+        for (key, emoji, _) in kinds {
+            let cur = remindInterval(for: key)
+            let name = remindKindName[key] ?? key
+            let kindItem = NSMenuItem(title: "\(emoji) \(name): \(remindLabel(cur))", action: nil, keyEquivalent: "")
+            let ksub = NSMenu()
+            var matched = false
+            for (label, secs) in remindPresets {
+                let mi = NSMenuItem(title: label, action: #selector(setReminder(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.representedObject = ["kind": key, "secs": secs] as [String: Any]
+                if abs(secs - cur) < 0.5 { mi.state = .on; matched = true }
+                ksub.addItem(mi)
+            }
+            if !matched {           // a custom value set via `defaults write`
+                let mi = NSMenuItem(title: "custom: \(remindLabel(cur))", action: nil, keyEquivalent: "")
+                mi.state = .on; mi.isEnabled = false
+                ksub.addItem(mi)
+            }
+            kindItem.submenu = ksub
+            rsub.addItem(kindItem)
         }
-        if !matched {           // a custom value set via `defaults write`
-            let mi = NSMenuItem(title: "custom: \(renagLabel(cur))", action: nil, keyEquivalent: "")
-            mi.state = .on; mi.isEnabled = false
-            sub.addItem(mi)
-        }
-        renag.submenu = sub
-        menu.addItem(renag)
+        reminders.submenu = rsub
+        menu.addItem(reminders)
 
         let r = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
         r.target = self
@@ -290,13 +323,14 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? p.run()
     }
 
-    @objc func setRenag(_ sender: NSMenuItem) {
-        guard let s = sender.representedObject as? Double else { return }
-        renagSeconds = s
-        lastNagged.removeAll()        // restart the cadence from the new setting
+    @objc func setReminder(_ sender: NSMenuItem) {
+        guard let o = sender.representedObject as? [String: Any],
+              let kind = o["kind"] as? String, let secs = o["secs"] as? Double else { return }
+        UserDefaults.standard.set(secs, forKey: "remind.\(kind)")
+        lastReminded.removeAll()      // restart the cadence from the new setting
     }
 
-    func renagLabel(_ s: Double) -> String {
+    func remindLabel(_ s: Double) -> String {
         if s <= 0 { return "off" }
         if s < 90 { return "\(Int(s))s" }
         let m = Int(s) / 60, rem = Int(s) % 60
