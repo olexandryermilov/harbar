@@ -185,6 +185,11 @@ what changed in each version: **[CHANGELOG.md](CHANGELOG.md)** /
   works system-wide, no extra permissions. remap (Carbon masks: ctrl 4096, opt 2048, shift 512,
   cmd 256): `defaults write com.harbar.app hotkeyKeyCode 38; defaults write com.harbar.app
   hotkeyModifiers 6144` (keycode 0 disables).
+- **↻ RECENT**: ended sessions are kept (12 newest, a week max) in a folded section at the bottom —
+  click one to reopen it in a new terminal tab and resume the conversation (`claude --resume` /
+  `codex resume`; exact tab in iTerm, Terminal fallback). resuming drops it off the list.
+- something off? **`/harbar:doctor`** checks the whole install (app, hooks, plugin version, codex
+  trust, notification permission incl. a test banner) and prints the fix next to every finding.
 - **snooze** a noisy session: ⌥-click its row (any row — 😴 marks it, ⌥-click again to resume).
   two flavors: on a **blocked** row it's kind-scoped — quiet while the session stays in that group,
   auto-clears (and re-notifies) when the group changes. on a **working/idle** row it's a full mute —
@@ -215,8 +220,12 @@ kept). config backups (`*.harbar-bak-*`) are left in place.
 .claude-plugin/plugin.json        plugin manifest
 hooks/hooks.json                  Claude hooks the plugin auto-registers (${CLAUDE_PLUGIN_ROOT}/src/harbar-hook.py)
 skills/install-app/SKILL.md       /harbar:install-app — builds the app, agent, codex
+skills/update/SKILL.md            /harbar:update — rebuild after a new release
+skills/doctor/SKILL.md            /harbar:doctor — diagnose a broken install
 src/harbar-hook.py                hook dispatcher (writes session state)
 src/focus.sh                      click-to-focus terminal
+src/resume.sh                     reopen an ended session (claude --resume)
+src/doctor.sh                     the diagnostic /harbar:doctor runs
 src/merge-hooks.py                idempotent hook-config merge / removal
 src/Harbar.swift                  the menu bar app (AppKit, single file)
 src/Harbar-Info.plist             app bundle metadata

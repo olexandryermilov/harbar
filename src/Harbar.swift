@@ -23,6 +23,7 @@ struct Session {
     let agent: String
     let sessionId: String
     let project: String
+    let cwd: String
     let terminal: String
     let status: String
     let kind: String?
@@ -75,7 +76,9 @@ final class FoldHeaderView: NSView {
 
 final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/sessions")
+    let recentDir = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/recent")
     let focusScript = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/focus.sh")
+    let resumeScript = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/resume.sh")
     // snooze state: {"<agent>-<sid>": "<kind>"} — a session is muted while it stays
     // in that kind; reminders resume (and the snooze clears) once the kind changes.
     let snoozePath = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/snoozed.json")
@@ -175,6 +178,32 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (out?.isEmpty == false) ? out : nil
     }()
 
+    func parseSession(_ obj: [String: Any], lastKey: String = "last_activity") -> Session {
+        var loop: LoopInfo? = nil
+        if let lo = obj["loop"] as? [String: Any] {
+            loop = LoopInfo(
+                n: (lo["n"] as? NSNumber)?.intValue ?? 1,
+                every: (lo["every"] as? NSNumber)?.doubleValue,
+                avg: (lo["avg"] as? NSNumber)?.doubleValue,
+                last: (lo["last"] as? NSNumber)?.doubleValue ?? 0,
+                nextAt: (lo["next_at"] as? NSNumber)?.doubleValue)
+        }
+        return Session(
+            agent: obj["agent"] as? String ?? "?",
+            sessionId: obj["session_id"] as? String ?? "",
+            project: obj["project"] as? String ?? "?",
+            cwd: obj["cwd"] as? String ?? "",
+            terminal: obj["terminal"] as? String ?? "?",
+            status: obj["status"] as? String ?? "idle",
+            kind: obj["kind"] as? String,
+            note: obj["note"] as? String,
+            branch: obj["branch"] as? String,
+            label: obj["label"] as? String,
+            activity: obj["activity"] as? String,
+            loop: loop,
+            lastActivity: (obj[lastKey] as? Double) ?? 0)
+    }
+
     func loadSessions() -> [Session] {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
@@ -183,39 +212,51 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for f in files where f.hasSuffix(".json") {
             let path = (dir as NSString).appendingPathComponent(f)
             guard let data = fm.contents(atPath: path),
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                  var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             else { continue }
             var pid = obj["agent_pid"] as? Int
             if pid == nil, let d = obj["agent_pid"] as? Double { pid = Int(d) }
             let last = (obj["last_activity"] as? Double) ?? 0
-            if !isAlive(pid ?? -1) || now - last > 86400 {     // prune dead / stale
+            if now - last > 86400 {                            // stale: drop entirely
                 try? fm.removeItem(atPath: path)
                 continue
             }
-            var loop: LoopInfo? = nil
-            if let lo = obj["loop"] as? [String: Any] {
-                loop = LoopInfo(
-                    n: (lo["n"] as? NSNumber)?.intValue ?? 1,
-                    every: (lo["every"] as? NSNumber)?.doubleValue,
-                    avg: (lo["avg"] as? NSNumber)?.doubleValue,
-                    last: (lo["last"] as? NSNumber)?.doubleValue ?? 0,
-                    nextAt: (lo["next_at"] as? NSNumber)?.doubleValue)
+            if !isAlive(pid ?? -1) {                           // dead: retire to recent
+                obj["status"] = "ended"
+                obj["ended_at"] = now
+                obj.removeValue(forKey: "kind"); obj.removeValue(forKey: "note")
+                obj.removeValue(forKey: "activity")
+                try? fm.createDirectory(atPath: recentDir, withIntermediateDirectories: true)
+                if let d = try? JSONSerialization.data(withJSONObject: obj) {
+                    try? d.write(to: URL(fileURLWithPath: (recentDir as NSString).appendingPathComponent(f)))
+                }
+                try? fm.removeItem(atPath: path)
+                continue
             }
-            out.append(Session(
-                agent: obj["agent"] as? String ?? "?",
-                sessionId: obj["session_id"] as? String ?? "",
-                project: obj["project"] as? String ?? "?",
-                terminal: obj["terminal"] as? String ?? "?",
-                status: obj["status"] as? String ?? "idle",
-                kind: obj["kind"] as? String,
-                note: obj["note"] as? String,
-                branch: obj["branch"] as? String,
-                label: obj["label"] as? String,
-                activity: obj["activity"] as? String,
-                loop: loop,
-                lastActivity: last))
+            out.append(parseSession(obj))
         }
         return out
+    }
+
+    // ended sessions the hook/prune retired — offered for `--resume`, newest first
+    func loadRecent(limit: Int = 8) -> [Session] {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: recentDir) else { return [] }
+        let now = Date().timeIntervalSince1970
+        var out: [Session] = []
+        for f in files where f.hasSuffix(".json") {
+            let path = (recentDir as NSString).appendingPathComponent(f)
+            guard let data = fm.contents(atPath: path),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { continue }
+            let ended = (obj["ended_at"] as? Double) ?? 0
+            if now - ended > 7 * 86400 {                       // a week is no longer "recent"
+                try? fm.removeItem(atPath: path)
+                continue
+            }
+            out.append(parseSession(obj, lastKey: "ended_at"))
+        }
+        return Array(out.sorted { $0.lastActivity > $1.lastActivity }.prefix(limit))
     }
 
     func kindOf(_ s: Session) -> String {
@@ -304,6 +345,8 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: lifecycle
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // recent (ended) sessions are background info — folded unless opened
+        UserDefaults.standard.register(defaults: ["fold.recent": true])
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -455,6 +498,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addIf(menu, "working", "▸ WORKING", sessions.filter { $0.status == "working" })
         addIf(menu, "error", "⚠ ERROR", sessions.filter { $0.status == "error" })
         addIf(menu, "idle", "✓ IDLE", sessions.filter { $0.status == "idle" })
+        addRecent(menu, loadRecent())
 
         menu.addItem(.separator())
 
@@ -586,6 +630,33 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
 
+    // ended sessions, click to resume the conversation in a fresh terminal tab
+    func addRecent(_ menu: NSMenu, _ rows: [Session]) {
+        guard !rows.isEmpty else { return }
+        let folded = isFolded("recent")
+        let title = "\(folded ? "▶" : "▼") ↻ RECENT (\(rows.count))"
+        let h = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        h.view = FoldHeaderView(key: "recent", title: title, controller: self)
+        menu.addItem(h)
+        if folded { return }
+        for s in rows {
+            let it = NSMenuItem(
+                title: "  \(tag[s.agent] ?? "?") \(s.displayName)  ·  ended \(agoStr(s.lastActivity)) ago — click to resume",
+                action: #selector(resumeSession(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = [s.agent, s.sessionId, s.cwd]
+            menu.addItem(it)
+        }
+    }
+
+    @objc func resumeSession(_ sender: NSMenuItem) {
+        guard let arr = sender.representedObject as? [String], arr.count == 3 else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [resumeScript, arr[0], arr[1], arr[2]]
+        try? p.run()
+    }
+
     @objc func focus(_ sender: NSMenuItem) {
         guard let arr = sender.representedObject as? [String], arr.count == 2 else { return }
         runFocus(arr[0], arr[1])
@@ -657,6 +728,13 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !working.isEmpty { sect("working", "▸ WORKING", working) }
         if !errored.isEmpty { sect("error", "⚠ ERROR", errored) }
         if !idle.isEmpty { sect("idle", "✓ IDLE", idle) }
+        let recent = loadRecent()
+        if !recent.isEmpty {
+            print("↻ RECENT (\(recent.count))")
+            for s in recent {
+                print("  \(tag[s.agent] ?? "?") \(s.displayName)  ·  ended \(agoStr(s.lastActivity)) ago")
+            }
+        }
     }
 }
 
