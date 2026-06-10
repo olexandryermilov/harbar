@@ -169,10 +169,16 @@ claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands
   permission in System Settings → Notifications (it can get reset by Homebrew updates).
 - still blocked? **reminders** re-ping on the per-kind interval set in the menu (`Reminders`
   submenu — one entry per kind). power users: `defaults write com.harbar.app "remind.permission_prompt" <n>` (0 = off).
-- **snooze** a noisy session: open its row → `snooze (until it changes group)`. it goes quiet (no
-  more reminders) while it stays in that kind, but if it shifts groups (e.g. idle-prompt →
-  permission) you get notified again and the snooze clears. a snoozed row is marked 😴; `resume
-  reminders` un-snoozes.
+- blocked rows show how long they've been **waiting on you** (`⏳ 4m`) and sort longest-waiting
+  first, so the most neglected session is always the top row of its section.
+- **⌃⌥J — keyboard triage.** a global hotkey jumps straight to the longest-blocked session's
+  terminal; press it again to cycle through the whole blocked queue (snoozed sessions go last).
+  works system-wide, no extra permissions. remap (Carbon masks: ctrl 4096, opt 2048, shift 512,
+  cmd 256): `defaults write com.harbar.app hotkeyKeyCode 38; defaults write com.harbar.app
+  hotkeyModifiers 6144` (keycode 0 disables).
+- **snooze** a noisy session: ⌥-click its row. it goes quiet (no more reminders) while it stays in
+  that kind, but if it shifts groups (e.g. idle-prompt → permission) you get notified again and the
+  snooze clears. a snoozed row is marked 😴; ⌥-click again to resume.
 - ⌘R refresh, ⌘Q quit.
 
 ## caveats

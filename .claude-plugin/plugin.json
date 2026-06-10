@@ -1,6 +1,6 @@
 {
   "name": "harbar",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "A harbour for your fleet of agent sessions — menu bar monitor for concurrent Claude Code + Codex CLI sessions.",
   "author": {
     "name": "olexandryermilov",
