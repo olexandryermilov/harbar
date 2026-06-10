@@ -47,12 +47,41 @@ func isAlive(_ pid: Int) -> Bool {
     return errno == EPERM        // exists but owned by another user
 }
 
+// a section header you can click to fold/unfold its group. a plain NSMenuItem
+// click would close the whole menu — a view-backed item handles the click
+// itself and asks the controller to rebuild the open menu in place.
+final class FoldHeaderView: NSView {
+    let key: String
+    weak var controller: HarbarController?
+
+    init(key: String, title: String, controller: HarbarController) {
+        self.key = key
+        self.controller = controller
+        super.init(frame: NSRect(x: 0, y: 0, width: 260, height: 20))
+        autoresizingMask = [.width]
+        let label = NSTextField(labelWithString: title)
+        label.font = NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        label.frame = NSRect(x: 14, y: 2, width: 600, height: 16)
+        label.autoresizingMask = [.width]
+        addSubview(label)
+    }
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    override func mouseUp(with event: NSEvent) {
+        controller?.toggleFold(key)
+    }
+}
+
 final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/sessions")
     let focusScript = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/focus.sh")
     // snooze state: {"<agent>-<sid>": "<kind>"} — a session is muted while it stays
     // in that kind; reminders resume (and the snooze clears) once the kind changes.
     let snoozePath = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/snoozed.json")
+    // pinned projects: ["project", …] — their sessions sort first, wear 📌, and
+    // stay at top level when the idle section folds.
+    let pinnedPath = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/pinned.json")
     var statusItem: NSStatusItem!
     var timer: Timer?
 
@@ -107,7 +136,26 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     func sessionKey(_ s: Session) -> String { "\(s.agent)-\(s.sessionId)" }
-    func isSnoozed(_ s: Session) -> Bool { loadSnoozed()[sessionKey(s)] == kindOf(s) }
+    // two snooze flavors: a blocked row snoozes kind-scoped (auto-clears when the
+    // group changes); any other row snoozes "*" — fully muted, incl. the hook's
+    // first ping, until manually resumed (or the session ends).
+    func isSnoozed(_ s: Session) -> Bool {
+        let v = loadSnoozed()[sessionKey(s)]
+        return v == "*" || v == kindOf(s)
+    }
+
+    func loadPinned() -> Set<String> {
+        guard let d = FileManager.default.contents(atPath: pinnedPath),
+              let a = (try? JSONSerialization.jsonObject(with: d)) as? [String]
+        else { return [] }
+        return Set(a)
+    }
+    func savePinned(_ p: Set<String>) {
+        if let d = try? JSONSerialization.data(withJSONObject: Array(p).sorted()) {
+            try? d.write(to: URL(fileURLWithPath: pinnedPath))
+        }
+    }
+    func isPinned(_ s: Session) -> Bool { loadPinned().contains(s.project) }
     let kindMessage: [String: String] = [
         "permission_prompt": "needs permission",
         "idle_prompt": "waiting for your input",
@@ -327,12 +375,13 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let kind = kindOf(s)
             let key = "\(s.agent)-\(s.sessionId)"
             blocked.insert(key)
-            // a snooze only holds while the session stays in the kind it was snoozed in;
-            // once the group changes, drop it (the hook already re-notified for the new kind).
-            if let sk = snoozed[key], sk != kind { snoozed.removeValue(forKey: key); snoozeChanged = true }
+            // a kind-scoped snooze only holds while the session stays in that kind;
+            // once the group changes, drop it (the hook already re-notified for the
+            // new kind). a "*" snooze is a full manual mute and survives changes.
+            if let sk = snoozed[key], sk != "*", sk != kind { snoozed.removeValue(forKey: key); snoozeChanged = true }
             let interval = remindInterval(for: kind)
             if interval <= 0 { continue }                          // reminders off for this kind
-            if snoozed[key] == kind { continue }                   // snoozed -> stay quiet
+            if snoozed[key] != nil { continue }                    // snoozed -> stay quiet
             live.insert(key)
             let waited = epoch - s.lastActivity
             if waited < interval { continue }                      // hook owns the first ping
@@ -344,8 +393,12 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastReminded[key] = now
         }
         lastReminded = lastReminded.filter { live.contains($0.key) }   // forget unblocked sessions
-        // drop snoozes whose session is no longer blocked (a fresh block re-notifies)
-        for k in snoozed.keys where !blocked.contains(k) { snoozed.removeValue(forKey: k); snoozeChanged = true }
+        // prune: kind-scoped snoozes drop once the session is unblocked (a fresh
+        // block re-notifies); "*" mutes stick until their session is gone entirely.
+        let allKeys = Set(sessions.map { sessionKey($0) })
+        for (k, v) in snoozed where (v == "*" ? !allKeys.contains(k) : !blocked.contains(k)) {
+            snoozed.removeValue(forKey: k); snoozeChanged = true
+        }
         if snoozeChanged { saveSnoozed(snoozed) }
     }
 
@@ -392,16 +445,16 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(it)
         }
         for k in orderedNeedsKinds(byKind) {
-            addSection(menu, "\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!, snoozable: true)
+            addSection(menu, k, "\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!, snoozable: true)
         }
         if !needs.isEmpty {
-            let hint = NSMenuItem(title: "   ⌥-click a session to snooze it", action: nil, keyEquivalent: "")
+            let hint = NSMenuItem(title: "   hold ⌥ to snooze a row · ⇧ to pin its project", action: nil, keyEquivalent: "")
             hint.isEnabled = false
             menu.addItem(hint)
         }
-        addIf(menu, "▸ WORKING", sessions.filter { $0.status == "working" })
-        addIf(menu, "⚠ ERROR", sessions.filter { $0.status == "error" })
-        addIf(menu, "✓ IDLE", sessions.filter { $0.status == "idle" })
+        addIf(menu, "working", "▸ WORKING", sessions.filter { $0.status == "working" })
+        addIf(menu, "error", "⚠ ERROR", sessions.filter { $0.status == "error" })
+        addIf(menu, "idle", "✓ IDLE", sessions.filter { $0.status == "idle" })
 
         menu.addItem(.separator())
 
@@ -447,69 +500,118 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(q)
     }
 
-    func addIf(_ menu: NSMenu, _ header: String, _ rows: [Session]) {
-        if !rows.isEmpty { addSection(menu, header, rows) }
+    func addIf(_ menu: NSMenu, _ key: String, _ header: String, _ rows: [Session]) {
+        if !rows.isEmpty { addSection(menu, key, header, rows) }
+    }
+
+    // MARK: fold state — any group collapses on a header click, persisted per
+    // section in UserDefaults ("fold.<key>"). pinned rows stay visible regardless.
+    func isFolded(_ key: String) -> Bool { UserDefaults.standard.bool(forKey: "fold.\(key)") }
+
+    func toggleFold(_ key: String) {
+        UserDefaults.standard.set(!isFolded(key), forKey: "fold.\(key)")
+        if let menu = statusItem.menu { menuNeedsUpdate(menu) }   // refresh in place, menu stays open
     }
 
     // blocked rows sort longest-waiting first (the ago IS the blocked time — no
     // hook event fires while a session sits on a prompt) and wear a ⏳ so the
-    // most neglected session is always the top row of its section.
+    // most neglected session is always the top row of its section. elsewhere,
+    // pinned projects sort first (neglect order outranks pins on blocked rows).
     func sorted(_ rows: [Session], byWait: Bool) -> [Session] {
-        byWait ? rows.sorted { $0.lastActivity < $1.lastActivity }
-               : rows.sorted { $0.displayName < $1.displayName }
+        if byWait { return rows.sorted { $0.lastActivity < $1.lastActivity } }
+        let p = loadPinned()
+        return rows.sorted {
+            let a = p.contains($0.project), b = p.contains($1.project)
+            if a != b { return a }
+            return $0.displayName < $1.displayName
+        }
     }
 
     func agoSuffix(_ s: Session, waiting: Bool) -> String {
         waiting ? "⏳ \(agoStr(s.lastActivity))" : agoStr(s.lastActivity)
     }
 
-    func addSection(_ menu: NSMenu, _ header: String, _ rows: [Session], snoozable: Bool = false) {
-        let h = NSMenuItem(title: "\(header) (\(rows.count))", action: nil, keyEquivalent: "")
-        h.isEnabled = false
+    func addSection(_ menu: NSMenu, _ key: String, _ header: String, _ rows: [Session], snoozable: Bool = false) {
+        let folded = isFolded(key)
+        let title = "\(folded ? "▶" : "▼") \(header) (\(rows.count))"
+        let h = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        h.view = FoldHeaderView(key: key, title: title, controller: self)
         menu.addItem(h)
+        // folded: pinned rows stay visible (that's what a pin is for)
+        addRows(menu, folded ? rows.filter { isPinned($0) } : rows, snoozable: snoozable)
+    }
+
+    func rowMark(_ s: Session) -> String {
+        // an active loop is marked 🔁 wherever the row sits — on a blocked row
+        // it tells you approving resumes a loop, not a one-off.
+        (isSnoozed(s) ? "😴 " : "") + (loopActive(s) ? "🔁 " : "") + (isPinned(s) ? "📌 " : "")
+    }
+
+    func rowTitle(_ s: Session, waiting: Bool) -> String {
+        let detail = loopDetail(s) ? "  ·  \(loopStr(s))" : detailStr(s)
+        return "  \(rowMark(s))\(tag[s.agent] ?? "?") \(s.displayName)"
+             + "  ·  \(s.terminal)\(detail)  ·  \(agoSuffix(s, waiting: waiting))"
+    }
+
+    func addRows(_ menu: NSMenu, _ rows: [Session], snoozable: Bool) {
         for s in sorted(rows, byWait: snoozable) {
-            let snoozed = snoozable && isSnoozed(s)
-            // an active loop is marked 🔁 wherever the row sits — on a blocked row
-            // it tells you approving resumes a loop, not a one-off.
-            let mark = (snoozed ? "😴 " : "") + (loopActive(s) ? "🔁 " : "")
-            let detail = loopDetail(s) ? "  ·  \(loopStr(s))" : detailStr(s)
-            let title = "  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoSuffix(s, waiting: snoozable))"
-            // primary row: a single click always focuses the terminal
-            let it = NSMenuItem(title: title, action: #selector(focus(_:)), keyEquivalent: "")
+            // primary row: a single click always focuses the terminal.
+            // two stacked alternates on every row: ⌥ snooze · ⇧ pin.
+            let it = NSMenuItem(title: rowTitle(s, waiting: snoozable),
+                                action: #selector(focus(_:)), keyEquivalent: "")
             it.target = self
             it.keyEquivalentModifierMask = []
             it.representedObject = [s.agent, s.sessionId]
             menu.addItem(it)
-            if snoozable {
-                // ⌥-alternate: hold Option and the row becomes a snooze/resume toggle
-                let alt = NSMenuItem(
-                    title: snoozed ? "  🔔 \(s.displayName) — resume reminders"
-                                   : "  😴 \(s.displayName) — snooze until it changes group",
-                    action: #selector(toggleSnooze(_:)), keyEquivalent: "")
+            let snoozed = isSnoozed(s)
+            let snoozeTitle = snoozed
+                ? "  🔔 \(s.displayName) — resume notifications"
+                : (s.status == "needs_input"
+                    ? "  😴 \(s.displayName) — snooze until it changes group"
+                    : "  😴 \(s.displayName) — mute this session")
+            for (title, sel, mask) in [
+                (snoozeTitle, #selector(toggleSnooze(_:)), NSEvent.ModifierFlags.option),
+                (isPinned(s) ? "  📌 \(s.displayName) — unpin \(s.project)"
+                             : "  📌 \(s.displayName) — pin \(s.project) to top",
+                 #selector(togglePin(_:)), NSEvent.ModifierFlags.shift),
+            ] {
+                let alt = NSMenuItem(title: title, action: sel, keyEquivalent: "")
                 alt.target = self
                 alt.isAlternate = true
-                alt.keyEquivalentModifierMask = .option
+                alt.keyEquivalentModifierMask = mask
                 alt.representedObject = [s.agent, s.sessionId]
                 menu.addItem(alt)
             }
         }
     }
 
+
     @objc func focus(_ sender: NSMenuItem) {
         guard let arr = sender.representedObject as? [String], arr.count == 2 else { return }
         runFocus(arr[0], arr[1])
+    }
+
+    @objc func togglePin(_ sender: NSMenuItem) {
+        guard let arr = sender.representedObject as? [String], arr.count == 2,
+              let s = loadSessions().first(where: { $0.agent == arr[0] && $0.sessionId == arr[1] })
+        else { return }
+        var p = loadPinned()
+        if p.contains(s.project) { p.remove(s.project) } else { p.insert(s.project) }
+        savePinned(p)
     }
 
     @objc func toggleSnooze(_ sender: NSMenuItem) {
         guard let arr = sender.representedObject as? [String], arr.count == 2,
               let s = loadSessions().first(where: { $0.agent == arr[0] && $0.sessionId == arr[1] })
         else { return }
-        let key = sessionKey(s), kind = kindOf(s)
+        let key = sessionKey(s)
         var snoozed = loadSnoozed()
-        if snoozed[key] == kind {
-            snoozed.removeValue(forKey: key)              // resume
+        if snoozed[key] != nil {
+            snoozed.removeValue(forKey: key)              // resume (either flavor)
         } else {
-            snoozed[key] = kind                           // mute this session in this kind
+            // blocked row: kind-scoped (auto-clears on group change);
+            // anything else: "*" = fully muted until manually resumed
+            snoozed[key] = s.status == "needs_input" ? kindOf(s) : "*"
             lastReminded.removeValue(forKey: key)
         }
         saveSnoozed(snoozed)
@@ -540,22 +642,21 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let needs = sessions.filter { $0.status == "needs_input" }
         var byKind: [String: [Session]] = [:]
         for s in needs { byKind[kindOf(s), default: []].append(s) }
-        func sect(_ header: String, _ rows: [Session], waiting: Bool = false) {
-            print("\(header) (\(rows.count))")
-            for s in sorted(rows, byWait: waiting) {
-                let mark = loopActive(s) ? "🔁 " : ""
-                let detail = loopDetail(s) ? "  ·  \(loopStr(s))" : detailStr(s)
-                print("  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoSuffix(s, waiting: waiting))")
+        func sect(_ key: String, _ header: String, _ rows: [Session], waiting: Bool = false) {
+            let folded = isFolded(key)
+            print("\(folded ? "▶" : "▼") \(header) (\(rows.count))")
+            for s in sorted(folded ? rows.filter { isPinned($0) } : rows, byWait: waiting) {
+                print(rowTitle(s, waiting: waiting))
             }
         }
         if sessions.isEmpty { print("no sessions") }
-        for k in orderedNeedsKinds(byKind) { sect("\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!, waiting: true) }
+        for k in orderedNeedsKinds(byKind) { sect(k, "\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!, waiting: true) }
         let working = sessions.filter { $0.status == "working" }
         let errored = sessions.filter { $0.status == "error" }
         let idle = sessions.filter { $0.status == "idle" }
-        if !working.isEmpty { sect("▸ WORKING", working) }
-        if !errored.isEmpty { sect("⚠ ERROR", errored) }
-        if !idle.isEmpty { sect("✓ IDLE", idle) }
+        if !working.isEmpty { sect("working", "▸ WORKING", working) }
+        if !errored.isEmpty { sect("error", "⚠ ERROR", errored) }
+        if !idle.isEmpty { sect("idle", "✓ IDLE", idle) }
     }
 }
 

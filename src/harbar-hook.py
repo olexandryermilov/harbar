@@ -382,8 +382,19 @@ def process(ev, agent, notify=False):
         json.dump(rec, out)
     os.replace(tmp, f)
 
-    # notify once per fresh transition into a needs-input kind, with friendly text
-    if notify and rec["status"] == "needs_input" and prev.get("kind") != rec.get("kind"):
+    # notify once per fresh transition into a needs-input kind, with friendly text.
+    # a session the user muted ("*" in snoozed.json, set from the app on any
+    # non-blocked row) stays silent even for this first ping; kind-scoped snoozes
+    # are the app's business (it re-notifies on group change, we already did).
+    def muted():
+        try:
+            sn = json.loads((HARBAR.parent / "snoozed.json").read_text())
+            return sn.get(f"{agent}-{sid}") == "*"
+        except Exception:
+            return False
+
+    if (notify and rec["status"] == "needs_input"
+            and prev.get("kind") != rec.get("kind") and not muted()):
         kind = rec.get("kind", "")
         base = NOTIFY_MSG.get(kind, "needs your input")
         tool = rec.get("note")

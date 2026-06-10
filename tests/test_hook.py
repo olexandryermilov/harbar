@@ -115,6 +115,34 @@ class HookStateTests(unittest.TestCase):
         leftovers = [p.name for p in self.sessions.iterdir() if not p.name.endswith(".json")]
         self.assertEqual(leftovers, [])
 
+    def _notify_calls(self):
+        """run a permission_prompt with notify=True, return the commands fired."""
+        calls = []
+        orig_run, orig_tn = hook.run, hook.TN
+        hook.run, hook.TN = (lambda *c: calls.append(c)), "/usr/bin/true"
+        try:
+            ev = {"hook_event_name": "Notification", "notification_type": "permission_prompt",
+                  "tool_name": "Bash", "session_id": "s1", "cwd": self.tmp.name}
+            hook.process(ev, "claude", notify=True)
+        finally:
+            hook.run, hook.TN = orig_run, orig_tn
+        return calls
+
+    def test_notify_fires_on_fresh_block(self):
+        self.assertEqual(len(self._notify_calls()), 1)
+
+    def test_star_snooze_mutes_first_ping(self):
+        (self.sessions.parent / "snoozed.json").write_text(json.dumps({"claude-s1": "*"}))
+        self.assertEqual(self._notify_calls(), [])
+        # the state file still flips to needs_input — only the banner is muted
+        self.assertEqual(self.read()["status"], "needs_input")
+
+    def test_kind_snooze_does_not_mute_hook(self):
+        # kind-scoped snoozes are the app's concern; the hook still pings on a
+        # fresh kind so a group CHANGE always notifies
+        (self.sessions.parent / "snoozed.json").write_text(json.dumps({"claude-s1": "idle_prompt"}))
+        self.assertEqual(len(self._notify_calls()), 1)
+
 
 class LoopTests(unittest.TestCase):
     """/loop detection: start, wakeups, cadence, takeover, idle-prompt muting."""
