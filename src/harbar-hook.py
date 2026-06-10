@@ -11,7 +11,7 @@ reads the hook JSON on stdin, updates ~/.harbar/sessions/<agent>-<id>.json
 atomically, prints NOTHING to stdout and always exits 0 (so it can never alter
 a codex PermissionRequest approval decision).
 """
-import sys, json, os, time, subprocess, tempfile, pathlib, shutil
+import sys, json, os, re, time, subprocess, tempfile, pathlib, shutil
 
 args = sys.argv[1:]
 NOTIFY = "--notify" in args
@@ -127,6 +127,61 @@ def tool_activity(ev):
     if act and len(act) > 24:
         act = act[:23].rstrip() + "…"
     return act
+
+
+LOOP_RE = re.compile(r"^/loop(?:\s+(\d+)([smh]))?\s+(\S[\s\S]*)$")
+
+
+def parse_loop_cmd(text):
+    """(interval_seconds_or_None, task) if text is a /loop invocation, else None.
+    '/loop 5m check the deploy' -> (300, 'check the deploy');
+    '/loop check the deploy' (self-paced) -> (None, 'check the deploy')."""
+    m = LOOP_RE.match((text or "").strip())
+    if not m:
+        return None
+    secs = int(m.group(1)) * {"s": 1, "m": 60, "h": 3600}[m.group(2)] if m.group(1) else None
+    return secs, m.group(3).strip()
+
+
+def update_loop(rec, prompt, now=None):
+    """track /loop state across UserPromptSubmit events. a loop starts with
+    '/loop [Nm] <task>'; each wakeup re-submits the task (bare for fixed-interval
+    cron mode, or the same /loop line verbatim in dynamic mode) — verified
+    against claude code 2.1.x. any other prompt means the user took over."""
+    now = now or time.time()
+    text = (prompt or "").strip()
+    lp = rec.get("loop")
+    parsed = parse_loop_cmd(text)
+    task = parsed[1] if parsed else text
+    if lp and task == lp.get("prompt"):              # wakeup -> next cycle
+        n = int(lp.get("n", 1)) + 1
+        gap = now - lp.get("last", now)
+        if gap > 0:
+            prev_avg = lp.get("avg")
+            lp["avg"] = gap if prev_avg is None else (prev_avg * (n - 2) + gap) / (n - 1)
+        lp["n"] = n
+        lp["last"] = now
+        lp.pop("next_at", None)                      # consumed; a new one may follow
+    elif parsed:                                     # fresh /loop
+        rec["loop"] = {"prompt": task, "every": parsed[0], "n": 1,
+                       "started": now, "last": now}
+    elif lp:                                         # different prompt: user took over
+        rec.pop("loop", None)
+
+
+def loop_active(rec, now=None):
+    """a loop with no recent cycle is dead (ctrl-c kills the pending wakeups but
+    fires no hook event) — stale it out after ~2.5 missed periods. an explicit
+    next_at from ScheduleWakeup extends the window for slow dynamic loops."""
+    lp = rec.get("loop")
+    if not lp:
+        return False
+    now = now or time.time()
+    nxt = lp.get("next_at")
+    if nxt and now < nxt + 120:
+        return True
+    period = lp.get("every") or lp.get("avg") or 600
+    return now - lp.get("last", 0) < 2.5 * period + 60
 
 
 def agent_tty(pid):
@@ -269,9 +324,12 @@ def process(ev, agent, notify=False):
         rec.pop("note", None); rec.pop("kind", None); rec.pop("activity", None)
         if cwd:
             rec["branch"] = git_branch(cwd)
-        t = short_task(ev.get("prompt") or ev.get("user_prompt") or ev.get("message"))
+        raw = ev.get("prompt") or ev.get("user_prompt") or ev.get("message")
+        update_loop(rec, raw)
+        # short label = first words of the prompt (the loop task, not '/loop 5m …')
+        t = short_task((rec.get("loop") or {}).get("prompt") or raw)
         if t:
-            rec["label"] = t                     # short label = first words of the prompt
+            rec["label"] = t
     elif name == "Stop":
         rec["status"] = "idle"
         rec.pop("note", None); rec.pop("kind", None); rec.pop("activity", None)
@@ -283,16 +341,28 @@ def process(ev, agent, notify=False):
             rec["activity"] = act
         elif name == "PostToolUse":
             rec.pop("activity", None)
+        # dynamic /loop self-paces via ScheduleWakeup — its delaySeconds is the
+        # exact time of the next cycle, so capture it for the panel's countdown.
+        if rec.get("loop") and ev.get("tool_name") == "ScheduleWakeup":
+            ti = ev.get("tool_input")
+            d = ti.get("delaySeconds") if isinstance(ti, dict) else None
+            if isinstance(d, (int, float)) and d > 0:
+                rec["loop"]["next_at"] = time.time() + d
     elif name == "StopFailure":
         rec["status"] = "error"
         rec["note"] = ev.get("error_type", "error")
     elif name in ("Notification", "PermissionRequest"):   # claude | codex needs-input
-        rec["status"] = "needs_input"
-        if name == "PermissionRequest":
+        nt = ev.get("notification_type") or "notification"
+        if name == "Notification" and nt == "idle_prompt" and loop_active(rec):
+            pass    # a looping session wakes itself between cycles — it's not
+                    # waiting on the user, so don't mark it blocked or notify.
+                    # permission/elicitation prompts DO block a loop and stay loud.
+        elif name == "PermissionRequest":
+            rec["status"] = "needs_input"
             rec["kind"] = "codex_approval"
             rec["note"] = ev.get("tool_name") or "approval"
         else:
-            nt = ev.get("notification_type") or "notification"
+            rec["status"] = "needs_input"
             rec["kind"] = nt
             rec["note"] = ev.get("tool_name") or nt
     elif name == "SessionEnd":            # claude only; codex has none -> pid prune

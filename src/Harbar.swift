@@ -8,6 +8,16 @@ import AppKit
 import Foundation
 import Darwin
 
+// a session driven by /loop — written by the hook from the UserPromptSubmit
+// stream (initial '/loop [Nm] <task>' + each wakeup re-submitting the task).
+struct LoopInfo {
+    let n: Int            // cycles so far
+    let every: Double?    // fixed interval parsed from '/loop 5m …' (nil = self-paced)
+    let avg: Double?      // measured mean gap between cycles
+    let last: Double      // epoch of the latest cycle start
+    let nextAt: Double?   // exact next fire (from ScheduleWakeup), dynamic loops only
+}
+
 struct Session {
     let agent: String
     let sessionId: String
@@ -19,6 +29,7 @@ struct Session {
     let branch: String?
     let label: String?
     let activity: String?
+    let loop: LoopInfo?
     let lastActivity: Double
 
     var displayName: String {
@@ -132,6 +143,15 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try? fm.removeItem(atPath: path)
                 continue
             }
+            var loop: LoopInfo? = nil
+            if let lo = obj["loop"] as? [String: Any] {
+                loop = LoopInfo(
+                    n: (lo["n"] as? NSNumber)?.intValue ?? 1,
+                    every: (lo["every"] as? NSNumber)?.doubleValue,
+                    avg: (lo["avg"] as? NSNumber)?.doubleValue,
+                    last: (lo["last"] as? NSNumber)?.doubleValue ?? 0,
+                    nextAt: (lo["next_at"] as? NSNumber)?.doubleValue)
+            }
             out.append(Session(
                 agent: obj["agent"] as? String ?? "?",
                 sessionId: obj["session_id"] as? String ?? "",
@@ -143,6 +163,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 branch: obj["branch"] as? String,
                 label: obj["label"] as? String,
                 activity: obj["activity"] as? String,
+                loop: loop,
                 lastActivity: last))
         }
         return out
@@ -159,6 +180,51 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func detailStr(_ s: Session) -> String {
         let d = (s.note?.isEmpty == false) ? s.note! : (s.activity ?? "")
         return d.isEmpty ? "" : "  ·  \(d)"
+    }
+
+    // MARK: loop sessions (/loop)
+    // cancelling a loop (ctrl-c) fires no hook event, so a loop whose next cycle
+    // never came is dead — stale it out after ~2.5 missed periods. an explicit
+    // next_at (ScheduleWakeup) extends the window for slow dynamic loops.
+    func loopActive(_ s: Session) -> Bool {
+        guard let l = s.loop else { return false }
+        let now = Date().timeIntervalSince1970
+        if let nx = l.nextAt, now < nx + 120 { return true }
+        let period = l.every ?? l.avg ?? 600
+        return now - l.last < 2.5 * period + 60
+    }
+
+    // "×6 · every 1m · ▸ editing x" while a cycle runs, "×6 · every 1m · ⏲ next ~40s"
+    // while it sleeps. cadence: parsed interval for fixed loops, measured avg for
+    // dynamic ones (avg is honest about wandering self-paced delays).
+    func loopStr(_ s: Session) -> String {
+        guard let l = s.loop else { return "" }
+        var parts = ["×\(l.n)"]
+        if let e = l.every { parts.append("every \(durStr(e))") }
+        else if let a = l.avg { parts.append("avg ~\(durStr(a))") }
+        if s.status == "working" {
+            if let act = s.activity, !act.isEmpty { parts.append("▸ \(act)") }
+        } else {
+            let now = Date().timeIntervalSince1970
+            let nx = l.nextAt ?? l.last + (l.every ?? l.avg ?? 0)
+            if nx > now { parts.append("⏲ next ~\(durStr(nx - now))") }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    func durStr(_ secs: Double) -> String {
+        let v = Int(secs.rounded())
+        if v >= 3600 && v % 3600 == 0 { return "\(v / 3600)h" }     // whole units first:
+        if v >= 60 && v % 60 == 0 { return "\(v / 60)m" }           // 'every 1m', not 'every 60s'
+        if v < 100 { return "\(v)s" }
+        if v < 5400 { return "\((v + 30) / 60)m" }
+        return "\((v + 1800) / 3600)h"
+    }
+
+    // loop rows live in their own section while running/sleeping; a blocked or
+    // errored loop surfaces in its kind/error section (tagged 🔁) instead.
+    func isLoopRow(_ s: Session) -> Bool {
+        loopActive(s) && (s.status == "working" || s.status == "idle")
     }
 
     func agoStr(_ t: Double) -> String {
@@ -180,8 +246,10 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for k in counts.keys.sorted(by: { (kindOrder[$0] ?? 99, $0) < (kindOrder[$1] ?? 99, $1) }) {
             parts.append("\(kindEmoji[k] ?? "⏳")\(counts[k]!)")
         }
-        let working = sessions.filter { $0.status == "working" }.count
-        let idle = sessions.filter { $0.status == "idle" }.count
+        let looping = sessions.filter { isLoopRow($0) }.count
+        let working = sessions.filter { $0.status == "working" && !isLoopRow($0) }.count
+        let idle = sessions.filter { $0.status == "idle" && !isLoopRow($0) }.count
+        if looping > 0 { parts.append("🔁\(looping)") }
         if working > 0 { parts.append("▸\(working)") }
         parts.append("✓\(idle)")
         return parts.joined(separator: " ")
@@ -290,9 +358,10 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hint.isEnabled = false
             menu.addItem(hint)
         }
-        addIf(menu, "▸ WORKING", sessions.filter { $0.status == "working" })
+        addIf(menu, "🔁 ON THE LOOP", sessions.filter { isLoopRow($0) })
+        addIf(menu, "▸ WORKING", sessions.filter { $0.status == "working" && !isLoopRow($0) })
         addIf(menu, "⚠ ERROR", sessions.filter { $0.status == "error" })
-        addIf(menu, "✓ IDLE", sessions.filter { $0.status == "idle" })
+        addIf(menu, "✓ IDLE", sessions.filter { $0.status == "idle" && !isLoopRow($0) })
 
         menu.addItem(.separator())
 
@@ -341,8 +410,11 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(h)
         for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
             let snoozed = snoozable && isSnoozed(s)
-            let mark = snoozed ? "😴 " : ""
-            let title = "  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detailStr(s))  ·  \(agoStr(s.lastActivity))"
+            // a blocked/errored loop shows in its kind section, tagged so you know
+            // approving it resumes a loop (inside 🔁 ON THE LOOP the header says it).
+            let mark = (snoozed ? "😴 " : "") + (loopActive(s) && !isLoopRow(s) ? "🔁 " : "")
+            let detail = isLoopRow(s) ? "  ·  \(loopStr(s))" : detailStr(s)
+            let title = "  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoStr(s.lastActivity))"
             // primary row: a single click always focuses the terminal
             let it = NSMenuItem(title: title, action: #selector(focus(_:)), keyEquivalent: "")
             it.target = self
@@ -415,14 +487,18 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         func sect(_ header: String, _ rows: [Session]) {
             print("\(header) (\(rows.count))")
             for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
-                print("  \(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detailStr(s))  ·  \(agoStr(s.lastActivity))")
+                let mark = loopActive(s) && !isLoopRow(s) ? "🔁 " : ""
+                let detail = isLoopRow(s) ? "  ·  \(loopStr(s))" : detailStr(s)
+                print("  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoStr(s.lastActivity))")
             }
         }
         if sessions.isEmpty { print("no sessions") }
         for k in orderedNeedsKinds(byKind) { sect("\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!) }
-        let working = sessions.filter { $0.status == "working" }
+        let looping = sessions.filter { isLoopRow($0) }
+        let working = sessions.filter { $0.status == "working" && !isLoopRow($0) }
         let errored = sessions.filter { $0.status == "error" }
-        let idle = sessions.filter { $0.status == "idle" }
+        let idle = sessions.filter { $0.status == "idle" && !isLoopRow($0) }
+        if !looping.isEmpty { sect("🔁 ON THE LOOP", looping) }
         if !working.isEmpty { sect("▸ WORKING", working) }
         if !errored.isEmpty { sect("⚠ ERROR", errored) }
         if !idle.isEmpty { sect("✓ IDLE", idle) }

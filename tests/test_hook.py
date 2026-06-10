@@ -116,6 +116,108 @@ class HookStateTests(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
 
+class LoopTests(unittest.TestCase):
+    """/loop detection: start, wakeups, cadence, takeover, idle-prompt muting."""
+    TASK = "respond with only the word TICK and the current time, use no tools"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sessions = pathlib.Path(self.tmp.name) / "sessions"
+        hook.HARBAR = self.sessions
+        hook.TN = None
+        hook.find_agent_pid = lambda: 4242
+        hook.detect_terminal = lambda: ("Terminal", "Terminal")
+        hook.git_branch = lambda cwd: None
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_ev(self, **ev):
+        ev.setdefault("session_id", "s1")
+        ev.setdefault("cwd", self.tmp.name)
+        return hook.process(ev, "claude")
+
+    def start_loop(self, prompt=None):
+        return self.run_ev(hook_event_name="UserPromptSubmit",
+                           prompt=prompt or f"/loop 1m {self.TASK}")
+
+    def test_parse_loop_cmd(self):
+        self.assertEqual(hook.parse_loop_cmd("/loop 5m check the deploy"),
+                         (300, "check the deploy"))
+        self.assertEqual(hook.parse_loop_cmd("/loop 90s ping"), (90, "ping"))
+        self.assertEqual(hook.parse_loop_cmd("/loop 1h /standup 1"), (3600, "/standup 1"))
+        self.assertEqual(hook.parse_loop_cmd("/loop check the deploy"),
+                         (None, "check the deploy"))
+        self.assertIsNone(hook.parse_loop_cmd("fix the login bug"))
+        self.assertIsNone(hook.parse_loop_cmd("/looper 5m x"))
+
+    def test_loop_start(self):
+        rec = self.start_loop()
+        self.assertEqual(rec["loop"]["n"], 1)
+        self.assertEqual(rec["loop"]["every"], 60)
+        self.assertEqual(rec["loop"]["prompt"], self.TASK)
+        self.assertEqual(rec["label"], "respond with only the")   # task, not '/loop 1m …'
+        self.assertEqual(rec["status"], "working")
+
+    def test_wakeup_increments_cycles(self):
+        self.start_loop()
+        rec = self.run_ev(hook_event_name="UserPromptSubmit", prompt=self.TASK)
+        self.assertEqual(rec["loop"]["n"], 2)
+        rec = self.run_ev(hook_event_name="UserPromptSubmit", prompt=self.TASK)
+        self.assertEqual(rec["loop"]["n"], 3)
+        self.assertIn("avg", rec["loop"])
+
+    def test_dynamic_wakeup_with_loop_prefix_does_not_reset(self):
+        # dynamic mode re-fires the same /loop input verbatim each wakeup
+        self.start_loop("/loop check the deploy")
+        rec = self.run_ev(hook_event_name="UserPromptSubmit", prompt="/loop check the deploy")
+        self.assertEqual(rec["loop"]["n"], 2)
+        self.assertIsNone(rec["loop"]["every"])
+
+    def test_user_takeover_clears_loop(self):
+        self.start_loop()
+        rec = self.run_ev(hook_event_name="UserPromptSubmit", prompt="actually stop, do X")
+        self.assertNotIn("loop", rec)
+        self.assertEqual(rec["label"], "actually stop, do X")
+
+    def test_loop_survives_stop(self):
+        self.start_loop()
+        rec = self.run_ev(hook_event_name="Stop")
+        self.assertEqual(rec["status"], "idle")
+        self.assertEqual(rec["loop"]["n"], 1)
+
+    def test_idle_prompt_muted_while_looping(self):
+        self.start_loop()
+        self.run_ev(hook_event_name="Stop")
+        rec = self.run_ev(hook_event_name="Notification", notification_type="idle_prompt")
+        self.assertEqual(rec["status"], "idle")          # not needs_input
+        self.assertNotIn("kind", rec)
+
+    def test_permission_prompt_still_loud_while_looping(self):
+        self.start_loop()
+        rec = self.run_ev(hook_event_name="Notification",
+                          notification_type="permission_prompt", tool_name="Bash")
+        self.assertEqual(rec["status"], "needs_input")
+        self.assertEqual(rec["kind"], "permission_prompt")
+        self.assertEqual(rec["loop"]["n"], 1)            # flag survives the block
+
+    def test_idle_prompt_loud_when_loop_stale(self):
+        rec = self.start_loop()
+        # backdate the loop so 2.5 periods have passed (a ctrl-c'd loop)
+        p = self.sessions / "claude-s1.json"
+        rec["loop"]["last"] -= 1000
+        p.write_text(json.dumps(rec))
+        rec = self.run_ev(hook_event_name="Notification", notification_type="idle_prompt")
+        self.assertEqual(rec["status"], "needs_input")
+
+    def test_schedule_wakeup_sets_next_at(self):
+        self.start_loop("/loop watch the deploy")
+        rec = self.run_ev(hook_event_name="PreToolUse", tool_name="ScheduleWakeup",
+                          tool_input={"delaySeconds": 270, "reason": "x", "prompt": "y"})
+        self.assertIn("next_at", rec["loop"])
+        self.assertGreater(rec["loop"]["next_at"], rec["loop"]["last"] + 200)
+
+
 class ToolActivityTests(unittest.TestCase):
     def act(self, tool, ti=None):
         return hook.tool_activity({"tool_name": tool, "tool_input": ti or {}})
