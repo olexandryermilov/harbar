@@ -19,11 +19,11 @@ windows hunting for the one blocked on a prompt. click any session to sail strai
 💤 IDLE PROMPT (waiting on you) (3)
    ◆ ...
 🛑 APPROVAL (codex) (0)
-🔁 ON THE LOOP (1)
-   ◆ worker@main · clear the bug queue   · ×6 · every 5m · ⏲ next ~2m
 ▸ WORKING (1)
    ☁ worker@main · add retry logic       · VSCode    · 4s
 ✓ IDLE (5)
+   🔁 ◆ worker@main · clear bug queue    · ×6 · every 5m · ⏲ next ~2m
+   ◆ ...
 ```
 
 ◆ = claude, ☁ = codex. each session shows `project@branch · task`.
@@ -41,13 +41,14 @@ states: `working` (prompt submitted) · **needs input** split into 🔐 permissi
 plus the first few words of the latest prompt; a working row also shows the **current tool**
 (`editing focus.sh`, `$ git`, `searching`, …) so the panel stays useful even when nothing's blocked.
 
-**🔁 on the loop:** a session running `/loop` gets its own section instead of flickering
-working↔idle every cycle. the row shows the cycle count (`×6`), the cadence (`every 5m` parsed from
-the command, or `avg ~6m` measured for self-paced loops), and either the current tool or a
-`⏲ next ~2m` countdown while it sleeps. a loop that hits a permission prompt jumps into 🔐 tagged
-🔁 (it's genuinely blocked — approving resumes the loop); between-cycle 💤 idle-prompts are muted
-(the loop wakes itself, it's not waiting on you). cancelled loops fade out on their own after a
-couple of missed cycles. only loops started after harbar was installed are tracked.
+**🔁 on the loop:** a session running `/loop` is marked 🔁 wherever it sits — the loop is a flag,
+not a state, so the row stays in working/idle as usual. it shows the cycle count (`×6`), the
+cadence (`every 5m` parsed from the command, or `avg ~6m` measured for self-paced loops), and
+either the current tool or a `⏲ next ~2m` countdown while it sleeps. a loop that hits a permission
+prompt shows in 🔐 tagged 🔁 (it's genuinely blocked — approving resumes the loop); between-cycle
+💤 idle-prompts are muted (the loop wakes itself, it's not waiting on you). cancelled loops drop
+the mark on their own after a couple of missed cycles. only loops started after harbar was
+installed are tracked.
 
 **reminders:** a session that's been blocked on input keeps getting a reminder banner on an
 interval, so a stuck agent never goes silent if you miss the first ping. the interval is set

@@ -221,9 +221,9 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return "\((v + 1800) / 3600)h"
     }
 
-    // loop rows live in their own section while running/sleeping; a blocked or
-    // errored loop surfaces in its kind/error section (tagged 🔁) instead.
-    func isLoopRow(_ s: Session) -> Bool {
+    // the loop is a flag, not a state: rows stay in their natural status section
+    // (working / idle / blocked kind) and just carry the 🔁 mark + loop detail.
+    func loopDetail(_ s: Session) -> Bool {
         loopActive(s) && (s.status == "working" || s.status == "idle")
     }
 
@@ -246,10 +246,8 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for k in counts.keys.sorted(by: { (kindOrder[$0] ?? 99, $0) < (kindOrder[$1] ?? 99, $1) }) {
             parts.append("\(kindEmoji[k] ?? "⏳")\(counts[k]!)")
         }
-        let looping = sessions.filter { isLoopRow($0) }.count
-        let working = sessions.filter { $0.status == "working" && !isLoopRow($0) }.count
-        let idle = sessions.filter { $0.status == "idle" && !isLoopRow($0) }.count
-        if looping > 0 { parts.append("🔁\(looping)") }
+        let working = sessions.filter { $0.status == "working" }.count
+        let idle = sessions.filter { $0.status == "idle" }.count
         if working > 0 { parts.append("▸\(working)") }
         parts.append("✓\(idle)")
         return parts.joined(separator: " ")
@@ -358,10 +356,9 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hint.isEnabled = false
             menu.addItem(hint)
         }
-        addIf(menu, "🔁 ON THE LOOP", sessions.filter { isLoopRow($0) })
-        addIf(menu, "▸ WORKING", sessions.filter { $0.status == "working" && !isLoopRow($0) })
+        addIf(menu, "▸ WORKING", sessions.filter { $0.status == "working" })
         addIf(menu, "⚠ ERROR", sessions.filter { $0.status == "error" })
-        addIf(menu, "✓ IDLE", sessions.filter { $0.status == "idle" && !isLoopRow($0) })
+        addIf(menu, "✓ IDLE", sessions.filter { $0.status == "idle" })
 
         menu.addItem(.separator())
 
@@ -410,10 +407,10 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(h)
         for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
             let snoozed = snoozable && isSnoozed(s)
-            // a blocked/errored loop shows in its kind section, tagged so you know
-            // approving it resumes a loop (inside 🔁 ON THE LOOP the header says it).
-            let mark = (snoozed ? "😴 " : "") + (loopActive(s) && !isLoopRow(s) ? "🔁 " : "")
-            let detail = isLoopRow(s) ? "  ·  \(loopStr(s))" : detailStr(s)
+            // an active loop is marked 🔁 wherever the row sits — on a blocked row
+            // it tells you approving resumes a loop, not a one-off.
+            let mark = (snoozed ? "😴 " : "") + (loopActive(s) ? "🔁 " : "")
+            let detail = loopDetail(s) ? "  ·  \(loopStr(s))" : detailStr(s)
             let title = "  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoStr(s.lastActivity))"
             // primary row: a single click always focuses the terminal
             let it = NSMenuItem(title: title, action: #selector(focus(_:)), keyEquivalent: "")
@@ -487,18 +484,16 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         func sect(_ header: String, _ rows: [Session]) {
             print("\(header) (\(rows.count))")
             for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
-                let mark = loopActive(s) && !isLoopRow(s) ? "🔁 " : ""
-                let detail = isLoopRow(s) ? "  ·  \(loopStr(s))" : detailStr(s)
+                let mark = loopActive(s) ? "🔁 " : ""
+                let detail = loopDetail(s) ? "  ·  \(loopStr(s))" : detailStr(s)
                 print("  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoStr(s.lastActivity))")
             }
         }
         if sessions.isEmpty { print("no sessions") }
         for k in orderedNeedsKinds(byKind) { sect("\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!) }
-        let looping = sessions.filter { isLoopRow($0) }
-        let working = sessions.filter { $0.status == "working" && !isLoopRow($0) }
+        let working = sessions.filter { $0.status == "working" }
         let errored = sessions.filter { $0.status == "error" }
-        let idle = sessions.filter { $0.status == "idle" && !isLoopRow($0) }
-        if !looping.isEmpty { sect("🔁 ON THE LOOP", looping) }
+        let idle = sessions.filter { $0.status == "idle" }
         if !working.isEmpty { sect("▸ WORKING", working) }
         if !errored.isEmpty { sect("⚠ ERROR", errored) }
         if !idle.isEmpty { sect("✓ IDLE", idle) }
