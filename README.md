@@ -149,6 +149,11 @@ claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands
 
 > maintainers: bump `version` in **both** `.claude-plugin/plugin.json` and the plugin entry in
 > `.claude-plugin/marketplace.json` on each release — that's how clients detect a new version.
+> add an entry to [CHANGELOG.md](CHANGELOG.md) and publish a matching GitHub release (`gh release
+> create vX.Y.Z`).
+
+what changed in each version: **[CHANGELOG.md](CHANGELOG.md)** /
+[GitHub releases](https://github.com/olexandryermilov/harbar/releases).
 
 ## usage
 
