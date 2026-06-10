@@ -171,14 +171,19 @@ claude/codex sessions, and re-run codex `/hooks` trust only if the hook commands
   submenu — one entry per kind). power users: `defaults write com.harbar.app "remind.permission_prompt" <n>` (0 = off).
 - blocked rows show how long they've been **waiting on you** (`⏳ 4m`) and sort longest-waiting
   first, so the most neglected session is always the top row of its section.
+- **click a group header to fold/unfold it** (▼/▶) — works on every group, the menu stays open,
+  and the state persists. handy for collapsing a tall ✓ IDLE pile.
+- **⇧-click a row to pin its project** (📌). pinned sessions sort first in their section and stay
+  visible even inside a folded group. ⇧-click again to unpin. pins live in `~/.harbar/pinned.json`.
 - **⌃⌥J — keyboard triage.** a global hotkey jumps straight to the longest-blocked session's
   terminal; press it again to cycle through the whole blocked queue (snoozed sessions go last).
   works system-wide, no extra permissions. remap (Carbon masks: ctrl 4096, opt 2048, shift 512,
   cmd 256): `defaults write com.harbar.app hotkeyKeyCode 38; defaults write com.harbar.app
   hotkeyModifiers 6144` (keycode 0 disables).
-- **snooze** a noisy session: ⌥-click its row. it goes quiet (no more reminders) while it stays in
-  that kind, but if it shifts groups (e.g. idle-prompt → permission) you get notified again and the
-  snooze clears. a snoozed row is marked 😴; ⌥-click again to resume.
+- **snooze** a noisy session: ⌥-click its row (any row — 😴 marks it, ⌥-click again to resume).
+  two flavors: on a **blocked** row it's kind-scoped — quiet while the session stays in that group,
+  auto-clears (and re-notifies) when the group changes. on a **working/idle** row it's a full mute —
+  no first ping when it later blocks, no reminders, until you resume it or the session ends.
 - ⌘R refresh, ⌘Q quit.
 
 ## caveats
