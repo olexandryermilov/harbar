@@ -2,6 +2,15 @@
 
 all notable changes, newest first. versions match `.claude-plugin/plugin.json`.
 
+## 1.8.0 — 2026-06-10
+
+- **↻ RECENT + resume**: ended sessions are kept (12 newest, ≤1 week) in a folded section at the
+  bottom of the panel. click one to reopen it in a new terminal tab and resume the conversation
+  (`claude --resume` / `codex resume`). resuming or restarting the session drops it off the list.
+- **`/harbar:doctor`**: one-shot diagnostic — app + login agent, hook executes, plugin version vs
+  marketplace, codex hook trust, terminal-notifier + a test banner for the notification permission
+  that brew updates keep resetting. every finding comes with its fix inline.
+
 ## 1.7.0 — 2026-06-10
 
 - **foldable groups**: click any group header (▼/▶) to collapse/expand it — the menu stays open,

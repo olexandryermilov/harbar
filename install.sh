@@ -30,8 +30,9 @@ fi
 
 info "installing scripts to $HARBAR"
 mkdir -p "$HARBAR/sessions"
-cp "$SRC/harbar-hook.py" "$SRC/focus.sh" "$SRC/merge-hooks.py" "$SRC/Harbar.swift" "$SRC/Harbar-Info.plist" "$HARBAR/"
-chmod +x "$HARBAR/harbar-hook.py" "$HARBAR/focus.sh" "$HARBAR/merge-hooks.py"
+cp "$SRC/harbar-hook.py" "$SRC/focus.sh" "$SRC/resume.sh" "$SRC/doctor.sh" "$SRC/merge-hooks.py" \
+   "$SRC/Harbar.swift" "$SRC/Harbar-Info.plist" "$HARBAR/"
+chmod +x "$HARBAR/harbar-hook.py" "$HARBAR/focus.sh" "$HARBAR/resume.sh" "$HARBAR/doctor.sh" "$HARBAR/merge-hooks.py"
 
 info "building Harbar.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

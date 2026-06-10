@@ -292,6 +292,29 @@ def find_agent_pid():
     return fallback
 
 
+RECENT_KEEP = 12
+
+
+def retire(rec, f):
+    """an ended session moves to ~/.harbar/recent/ (so the app can offer
+    `claude --resume`) instead of vanishing; the newest RECENT_KEEP are kept."""
+    recent = HARBAR.parent / "recent"
+    recent.mkdir(parents=True, exist_ok=True)
+    rec = dict(rec)
+    rec["status"] = "ended"
+    rec["ended_at"] = time.time()
+    for k in ("kind", "note", "activity"):
+        rec.pop(k, None)
+    fd, tmp = tempfile.mkstemp(dir=str(recent))
+    with os.fdopen(fd, "w") as out:
+        json.dump(rec, out)
+    os.replace(tmp, recent / f.name)
+    f.unlink(missing_ok=True)
+    keep = sorted(recent.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for p in keep[RECENT_KEEP:]:
+        p.unlink(missing_ok=True)
+
+
 def process(ev, agent, notify=False):
     """apply one hook event to its session state file. pure-ish: only touches
     ~/.harbar/sessions and (optionally) fires a notification. returns the written
@@ -300,6 +323,8 @@ def process(ev, agent, notify=False):
     sid = ev["session_id"]
     f = HARBAR / f"{agent}-{sid}.json"
     prev = json.loads(f.read_text()) if f.exists() else {}
+    if ev["hook_event_name"] == "SessionStart":   # live again -> not "recent" anymore
+        (HARBAR.parent / "recent" / f.name).unlink(missing_ok=True)
 
     name = ev["hook_event_name"]
     cwd = ev.get("cwd", prev.get("cwd", ""))
@@ -366,7 +391,7 @@ def process(ev, agent, notify=False):
             rec["kind"] = nt
             rec["note"] = ev.get("tool_name") or nt
     elif name == "SessionEnd":            # claude only; codex has none -> pid prune
-        f.unlink(missing_ok=True)
+        retire(rec, f)
         return None
 
     # capture the Ghostty surface id once (on start, or self-heal on next prompt

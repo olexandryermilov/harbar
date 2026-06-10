@@ -103,6 +103,32 @@ class HookStateTests(unittest.TestCase):
         self.assertIsNone(rec)
         self.assertIsNone(self.read())
 
+    def test_session_end_retires_to_recent(self):
+        self.run_ev(hook_event_name="UserPromptSubmit", prompt="do the thing")
+        self.run_ev(hook_event_name="SessionEnd")
+        p = self.sessions.parent / "recent" / "claude-s1.json"
+        self.assertTrue(p.exists())
+        rec = json.loads(p.read_text())
+        self.assertEqual(rec["status"], "ended")
+        self.assertIn("ended_at", rec)
+        self.assertEqual(rec["label"], "do the thing")
+
+    def test_session_start_clears_recent_entry(self):
+        self.run_ev(hook_event_name="SessionStart")
+        self.run_ev(hook_event_name="SessionEnd")
+        recent = self.sessions.parent / "recent" / "claude-s1.json"
+        self.assertTrue(recent.exists())
+        self.run_ev(hook_event_name="SessionStart")     # resumed -> live again
+        self.assertFalse(recent.exists())
+        self.assertEqual(self.read()["status"], "idle")
+
+    def test_recent_pruned_to_cap(self):
+        for i in range(hook.RECENT_KEEP + 3):
+            self.run_ev(hook_event_name="SessionStart", session_id=f"r{i}")
+            self.run_ev(hook_event_name="SessionEnd", session_id=f"r{i}")
+        recent = list((self.sessions.parent / "recent").glob("*.json"))
+        self.assertEqual(len(recent), hook.RECENT_KEEP)
+
     def test_needs_input_then_resolved_clears_kind(self):
         self.run_ev(hook_event_name="Notification", notification_type="idle_prompt")
         rec = self.run_ev(hook_event_name="UserPromptSubmit", prompt="ok go")
