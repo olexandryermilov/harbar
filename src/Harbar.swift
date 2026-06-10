@@ -7,6 +7,7 @@
 import AppKit
 import Foundation
 import Darwin
+import Carbon.HIToolbox
 
 // a session driven by /loop — written by the hook from the UserPromptSubmit
 // stream (initial '/loop [Nm] <task>' + each wakeup re-submitting the task).
@@ -259,6 +260,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        registerHotkey()
         tick()
         timer = Timer.scheduledTimer(timeInterval: 2, target: self,
                                      selector: #selector(tick), userInfo: nil, repeats: true)
@@ -268,6 +270,47 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let sessions = loadSessions()
         statusItem.button?.title = titleString(sessions)
         checkReminders(sessions)
+    }
+
+    // MARK: keyboard triage — a global hotkey (default ⌃⌥J) jumps to the
+    // longest-blocked session; mashing it cycles through the whole blocked queue.
+    // Carbon RegisterEventHotKey needs no Accessibility/Input-Monitoring grant.
+    // remap: defaults write com.harbar.app hotkeyKeyCode 38; hotkeyModifiers 6144
+    // (Carbon masks: ctrl 4096, opt 2048, shift 512, cmd 256; 0 keycode = disable)
+    var hotKeyRef: EventHotKeyRef?
+    var triageIdx = 0
+
+    func registerHotkey() {
+        let d = UserDefaults.standard
+        let keyCode = UInt32(d.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_ANSI_J)
+        let mods = UInt32(d.object(forKey: "hotkeyModifiers") as? Int ?? (controlKey | optionKey))
+        if keyCode == 0 { return }
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                 eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+            Unmanaged<HarbarController>.fromOpaque(userData!).takeUnretainedValue().triageNext()
+            return noErr
+        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
+        let id = EventHotKeyID(signature: OSType(0x48425252), id: 1)   // 'HBRR'
+        RegisterEventHotKey(keyCode, mods, id, GetApplicationEventTarget(), 0, &hotKeyRef)
+    }
+
+    @objc func triageNext() {
+        // longest-waiting first; snoozed ones go to the back of the cycle
+        let blocked = loadSessions().filter { $0.status == "needs_input" }
+        let queue = sorted(blocked.filter { !isSnoozed($0) }, byWait: true)
+                  + sorted(blocked.filter { isSnoozed($0) }, byWait: true)
+        guard !queue.isEmpty else { return }
+        let s = queue[triageIdx % queue.count]
+        triageIdx += 1
+        runFocus(s.agent, s.sessionId)
+    }
+
+    func runFocus(_ agent: String, _ sid: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [focusScript, agent, sid]
+        try? p.run()
     }
 
     // remind on every still-blocked session on its kind's interval; reuse the hook's
@@ -389,6 +432,13 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminders.submenu = rsub
         menu.addItem(reminders)
 
+        triageIdx = 0      // opening the menu restarts the hotkey cycle from the top
+        // nil action = auto-disabled by NSMenu when nothing is blocked
+        let j = NSMenuItem(title: "Jump to longest-blocked   ⌃⌥J",
+                           action: needs.isEmpty ? nil : #selector(triageNext), keyEquivalent: "")
+        j.target = self
+        menu.addItem(j)
+
         let r = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
         r.target = self
         menu.addItem(r)
@@ -401,17 +451,29 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !rows.isEmpty { addSection(menu, header, rows) }
     }
 
+    // blocked rows sort longest-waiting first (the ago IS the blocked time — no
+    // hook event fires while a session sits on a prompt) and wear a ⏳ so the
+    // most neglected session is always the top row of its section.
+    func sorted(_ rows: [Session], byWait: Bool) -> [Session] {
+        byWait ? rows.sorted { $0.lastActivity < $1.lastActivity }
+               : rows.sorted { $0.displayName < $1.displayName }
+    }
+
+    func agoSuffix(_ s: Session, waiting: Bool) -> String {
+        waiting ? "⏳ \(agoStr(s.lastActivity))" : agoStr(s.lastActivity)
+    }
+
     func addSection(_ menu: NSMenu, _ header: String, _ rows: [Session], snoozable: Bool = false) {
         let h = NSMenuItem(title: "\(header) (\(rows.count))", action: nil, keyEquivalent: "")
         h.isEnabled = false
         menu.addItem(h)
-        for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
+        for s in sorted(rows, byWait: snoozable) {
             let snoozed = snoozable && isSnoozed(s)
             // an active loop is marked 🔁 wherever the row sits — on a blocked row
             // it tells you approving resumes a loop, not a one-off.
             let mark = (snoozed ? "😴 " : "") + (loopActive(s) ? "🔁 " : "")
             let detail = loopDetail(s) ? "  ·  \(loopStr(s))" : detailStr(s)
-            let title = "  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoStr(s.lastActivity))"
+            let title = "  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoSuffix(s, waiting: snoozable))"
             // primary row: a single click always focuses the terminal
             let it = NSMenuItem(title: title, action: #selector(focus(_:)), keyEquivalent: "")
             it.target = self
@@ -435,10 +497,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func focus(_ sender: NSMenuItem) {
         guard let arr = sender.representedObject as? [String], arr.count == 2 else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [focusScript, arr[0], arr[1]]
-        try? p.run()
+        runFocus(arr[0], arr[1])
     }
 
     @objc func toggleSnooze(_ sender: NSMenuItem) {
@@ -481,16 +540,16 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let needs = sessions.filter { $0.status == "needs_input" }
         var byKind: [String: [Session]] = [:]
         for s in needs { byKind[kindOf(s), default: []].append(s) }
-        func sect(_ header: String, _ rows: [Session]) {
+        func sect(_ header: String, _ rows: [Session], waiting: Bool = false) {
             print("\(header) (\(rows.count))")
-            for s in rows.sorted(by: { $0.displayName < $1.displayName }) {
+            for s in sorted(rows, byWait: waiting) {
                 let mark = loopActive(s) ? "🔁 " : ""
                 let detail = loopDetail(s) ? "  ·  \(loopStr(s))" : detailStr(s)
-                print("  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoStr(s.lastActivity))")
+                print("  \(mark)\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.terminal)\(detail)  ·  \(agoSuffix(s, waiting: waiting))")
             }
         }
         if sessions.isEmpty { print("no sessions") }
-        for k in orderedNeedsKinds(byKind) { sect("\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!) }
+        for k in orderedNeedsKinds(byKind) { sect("\(kindEmoji[k] ?? "⏳") \(kindLabel[k] ?? k.uppercased())", byKind[k]!, waiting: true) }
         let working = sessions.filter { $0.status == "working" }
         let errored = sessions.filter { $0.status == "error" }
         let idle = sessions.filter { $0.status == "idle" }
