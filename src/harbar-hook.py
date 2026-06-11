@@ -28,6 +28,24 @@ NOTIFY_MSG = {
     "codex_approval": "needs approval",
 }
 FOCUS = str(pathlib.Path.home() / ".harbar" / "focus.sh")
+# per-kind notification sounds; overridden by ~/.harbar/sounds.json (written by
+# the app's Sounds menu). a name resolves against /System/Library/Sounds and
+# ~/Library/Sounds (drop your own .aiff there). "off" = silent banner.
+SOUND_DEFAULTS = {
+    "permission_prompt": "Glass",
+    "codex_approval": "Glass",
+    "elicitation_dialog": "Glass",
+    "idle_prompt": "Tink",
+}
+
+
+def kind_sound(kind):
+    try:
+        cfg = json.loads((HARBAR.parent / "sounds.json").read_text())
+    except Exception:
+        cfg = {}
+    s = cfg.get(kind, SOUND_DEFAULTS.get(kind, "Glass"))
+    return None if s in ("", "off") else s
 
 
 def run(*cmd):
@@ -426,14 +444,19 @@ def process(ev, agent, notify=False):
         if kind in ("permission_prompt", "codex_approval") and tool and tool != kind:
             base = f"{base}: {tool}"
         title = f"{rec['project']} · {rec['terminal']}"
+        snd = kind_sound(kind)
         if TN:  # clickable -> jumps to the session's terminal
-            run(TN, "-title", title, "-message", base, "-sound", "Glass",
-                "-group", f"harbar-{agent}-{sid}",
-                "-execute", f"{FOCUS} {agent} {sid}")
+            args = [TN, "-title", title, "-message", base,
+                    "-group", f"harbar-{agent}-{sid}",
+                    "-execute", f"{FOCUS} {agent} {sid}"]
+            if snd:
+                args += ["-sound", snd]
+            run(*args)
         else:   # fallback: plain (non-clickable) notification
             m, t = base.replace('"', "'"), title.replace('"', "'")
+            tail = f' sound name "{snd}"' if snd else ""
             run("osascript", "-e",
-                f'display notification "{m}" with title "{t}" sound name "Glass"')
+                f'display notification "{m}" with title "{t}"{tail}')
     return rec
 
 

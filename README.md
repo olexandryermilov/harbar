@@ -174,6 +174,10 @@ what changed in each version: **[CHANGELOG.md](CHANGELOG.md)** /
   permission in System Settings → Notifications (it can get reset by Homebrew updates).
 - still blocked? **reminders** re-ping on the per-kind interval set in the menu (`Reminders`
   submenu — one entry per kind). power users: `defaults write com.harbar.app "remind.permission_prompt" <n>` (0 = off).
+- **per-kind sounds** (`Sounds` submenu): pick a system sound per kind — selecting one previews it —
+  or `off` for a silent banner. defaults: permission / approval / form = Glass, idle prompt = Tink.
+  **custom sounds:** drop a `.aiff` into `~/Library/Sounds` and it appears in the list (♪). stored
+  in `~/.harbar/sounds.json`, shared by the first ping and the reminders.
 - blocked rows show how long they've been **waiting on you** (`⏳ 4m`) and sort longest-waiting
   first, so the most neglected session is always the top row of its section.
 - **click a group header to fold/unfold it** (▼/▶) — works on every group, the menu stays open,
