@@ -2,6 +2,13 @@
 
 all notable changes, newest first. versions match `.claude-plugin/plugin.json`.
 
+## 1.9.0 — 2026-06-11
+
+- **per-kind notification sounds** (menu ▸ Sounds): each needs-input kind gets its own sound —
+  learn the kind by ear. picking a sound previews it; `off` = silent banner. custom sounds: drop a
+  `.aiff` into `~/Library/Sounds` and it shows up in the list. defaults: permission / approval /
+  form = Glass, idle prompt = Tink.
+
 ## 1.8.0 — 2026-06-10
 
 - **↻ RECENT + resume**: ended sessions are kept (12 newest, ≤1 week) in a folded section at the

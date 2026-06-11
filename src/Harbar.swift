@@ -165,6 +165,41 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "elicitation_dialog": "needs form input",
         "codex_approval": "needs approval",
     ]
+
+    // MARK: per-kind notification sounds — ~/.harbar/sounds.json is shared with
+    // the hook (it owns the first ping, the app owns reminders). a sound name
+    // resolves against /System/Library/Sounds and ~/Library/Sounds, so custom
+    // sounds are just .aiff files dropped into the latter. "off" = silent.
+    let soundsPath = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/sounds.json")
+    let soundDefaults: [String: String] = [
+        "permission_prompt": "Glass", "codex_approval": "Glass",
+        "elicitation_dialog": "Glass", "idle_prompt": "Tink",
+    ]
+    let systemSounds = ["Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero",
+                        "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"]
+
+    func loadSounds() -> [String: String] {
+        guard let d = FileManager.default.contents(atPath: soundsPath),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: String]
+        else { return [:] }
+        return o
+    }
+    func saveSounds(_ m: [String: String]) {
+        if let d = try? JSONSerialization.data(withJSONObject: m) {
+            try? d.write(to: URL(fileURLWithPath: soundsPath))
+        }
+    }
+    func soundFor(_ kind: String) -> String? {
+        let s = loadSounds()[kind] ?? soundDefaults[kind] ?? "Glass"
+        return (s.isEmpty || s == "off") ? nil : s
+    }
+    func customSounds() -> [String] {
+        let dir = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Sounds")
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        return files.filter { !$0.hasPrefix(".") }
+            .map { ($0 as NSString).deletingPathExtension }
+            .sorted()
+    }
     lazy var tnPath: String? = {                          // terminal-notifier, for clickable banners
         for c in ["/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier"]
         where FileManager.default.isExecutableFile(atPath: c) { return c }
@@ -432,7 +467,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let friendly = kindMessage[kind] ?? "needs your input"
             notify(title: "⏳ still waiting · \(s.project) · \(s.terminal)",
                    message: "\(friendly) — \(Int(waited / 60))m",
-                   agent: s.agent, sid: s.sessionId)
+                   agent: s.agent, sid: s.sessionId, kind: kind)
             lastReminded[key] = now
         }
         lastReminded = lastReminded.filter { live.contains($0.key) }   // forget unblocked sessions
@@ -445,7 +480,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if snoozeChanged { saveSnoozed(snoozed) }
     }
 
-    func notify(title: String, message: String, agent: String, sid: String) {
+    func notify(title: String, message: String, agent: String, sid: String, kind: String = "") {
         // opt-in debug trail (off by default): set HARBAR_REMIND_LOG=1 to append every
         // fired reminder to ~/.harbar/remind-debug.log — makes the timing testable.
         if ProcessInfo.processInfo.environment["HARBAR_REMIND_LOG"] != nil {
@@ -458,16 +493,20 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         let group = "harbar-\(agent)-\(sid)"
+        let snd = soundFor(kind)
         let p = Process()
         if let tn = tnPath {
             p.executableURL = URL(fileURLWithPath: tn)
-            p.arguments = ["-title", title, "-message", message, "-sound", "Glass",
-                           "-group", group, "-execute", "\(focusScript) \(agent) \(sid)"]
+            var args = ["-title", title, "-message", message,
+                        "-group", group, "-execute", "\(focusScript) \(agent) \(sid)"]
+            if let snd { args += ["-sound", snd] }
+            p.arguments = args
         } else {
             let m = message.replacingOccurrences(of: "\"", with: "'")
             let t = title.replacingOccurrences(of: "\"", with: "'")
+            let tail = snd.map { " sound name \"\($0)\"" } ?? ""
             p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            p.arguments = ["-e", "display notification \"\(m)\" with title \"\(t)\" sound name \"Glass\""]
+            p.arguments = ["-e", "display notification \"\(m)\" with title \"\(t)\"\(tail)"]
         }
         try? p.run()
     }
@@ -528,6 +567,42 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         reminders.submenu = rsub
         menu.addItem(reminders)
+
+        // Sounds ▸ one submenu per kind: off / system sounds / anything the user
+        // dropped into ~/Library/Sounds. picking one previews it.
+        let sounds = NSMenuItem(title: "Sounds", action: nil, keyEquivalent: "")
+        let ssub = NSMenu()
+        let custom = customSounds()
+        for (key, emoji, _) in kinds {
+            let cur = loadSounds()[key] ?? soundDefaults[key] ?? "Glass"
+            let curLabel = (cur.isEmpty || cur == "off") ? "off" : cur
+            let kindItem = NSMenuItem(title: "\(emoji) \(remindKindName[key] ?? key): \(curLabel)",
+                                      action: nil, keyEquivalent: "")
+            let ksub = NSMenu()
+            func soundItem(_ name: String, _ value: String) {
+                let mi = NSMenuItem(title: name, action: #selector(setSound(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.representedObject = ["kind": key, "sound": value]
+                if value == cur || (value == "off" && (cur.isEmpty || cur == "off")) { mi.state = .on }
+                ksub.addItem(mi)
+            }
+            soundItem("off", "off")
+            ksub.addItem(.separator())
+            for s in systemSounds { soundItem(s, s) }
+            if !custom.isEmpty {
+                ksub.addItem(.separator())
+                for s in custom { soundItem("♪ \(s)", s) }
+            }
+            ksub.addItem(.separator())
+            let hint = NSMenuItem(title: "add your own: drop a .aiff into ~/Library/Sounds",
+                                  action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            ksub.addItem(hint)
+            kindItem.submenu = ksub
+            ssub.addItem(kindItem)
+        }
+        sounds.submenu = ssub
+        menu.addItem(sounds)
 
         triageIdx = 0      // opening the menu restarts the hotkey cycle from the top
         // nil action = auto-disabled by NSMenu when nothing is blocked
@@ -686,6 +761,15 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastReminded.removeValue(forKey: key)
         }
         saveSnoozed(snoozed)
+    }
+
+    @objc func setSound(_ sender: NSMenuItem) {
+        guard let o = sender.representedObject as? [String: String],
+              let kind = o["kind"], let sound = o["sound"] else { return }
+        var m = loadSounds()
+        m[kind] = sound
+        saveSounds(m)
+        if sound != "off" { NSSound(named: sound)?.play() }   // instant preview
     }
 
     @objc func setReminder(_ sender: NSMenuItem) {

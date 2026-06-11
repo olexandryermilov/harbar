@@ -169,6 +169,21 @@ class HookStateTests(unittest.TestCase):
         (self.sessions.parent / "snoozed.json").write_text(json.dumps({"claude-s1": "idle_prompt"}))
         self.assertEqual(len(self._notify_calls()), 1)
 
+    def test_default_sound_on_notification(self):
+        call = self._notify_calls()[0]
+        i = call.index("-sound")
+        self.assertEqual(call[i + 1], "Glass")
+
+    def test_custom_sound_from_config(self):
+        (self.sessions.parent / "sounds.json").write_text(json.dumps({"permission_prompt": "Funk"}))
+        call = self._notify_calls()[0]
+        self.assertEqual(call[call.index("-sound") + 1], "Funk")
+
+    def test_sound_off_is_silent_banner(self):
+        (self.sessions.parent / "sounds.json").write_text(json.dumps({"permission_prompt": "off"}))
+        call = self._notify_calls()[0]
+        self.assertNotIn("-sound", call)        # banner still fires, just silent
+
 
 class LoopTests(unittest.TestCase):
     """/loop detection: start, wakeups, cadence, takeover, idle-prompt muting."""
