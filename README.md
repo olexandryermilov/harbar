@@ -192,6 +192,12 @@ what changed in each version: **[CHANGELOG.md](CHANGELOG.md)** /
 - **↻ RECENT**: ended sessions are kept (12 newest, a week max) in a folded section at the bottom —
   click one to reopen it in a new terminal tab and resume the conversation (`claude --resume` /
   `codex resume`; exact tab in iTerm, Terminal fallback). resuming drops it off the list.
+- **🕘 Browse history…**: closed a session by accident and need it back? this opens a searchable
+  window over **every** past session — not just the recent 12. it's built fresh from the agents'
+  own transcripts (`~/.claude/projects/**` and `~/.codex/sessions/**`), so it's populated from day
+  one and every row is resumable. type to filter across project / branch / task / agent, then
+  **↵ or double-click** to resume (⎋ closes). claude rows are labelled with your first prompt,
+  codex rows with the thread name.
 - something off? **`/harbar:doctor`** checks the whole install (app, hooks, plugin version, codex
   trust, notification permission incl. a test banner) and prints the fix next to every finding.
 - **snooze** a noisy session: ⌥-click its row (any row — 😴 marks it, ⌥-click again to resume).
