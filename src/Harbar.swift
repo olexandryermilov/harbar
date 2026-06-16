@@ -87,6 +87,7 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let pinnedPath = (NSHomeDirectory() as NSString).appendingPathComponent(".harbar/pinned.json")
     var statusItem: NSStatusItem!
     var timer: Timer?
+    var historyWC: HistoryWindowController?
 
     let tag = ["claude": "◆", "codex": "☁\u{FE0E}"]   // U+FE0E = text (monochrome) presentation
     // needs-input kinds, each its own section + emoji, in display order
@@ -294,7 +295,142 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return Array(out.sorted { $0.lastActivity > $1.lastActivity }.prefix(limit))
     }
 
+    // MARK: history — every past session, browsable + searchable in a window.
+    // unlike RECENT (a 12-item rolling cache of what harbar saw), this is built
+    // fresh on each open from the agents' own transcripts: claude's
+    // ~/.claude/projects/<cwd>/<sid>.jsonl and codex's ~/.codex/sessions/**/*.jsonl.
+    // every row is resumable because the transcript it came from still exists.
+    let claudeProjects = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
+    let codexSessions  = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/sessions")
+    let codexIndex     = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/session_index.jsonl")
+
+    // parse the front of a (possibly huge) jsonl into line dicts. the metadata we
+    // want — cwd, gitBranch, first prompt — lives in the first small lines, so we
+    // cap total bytes AND skip any oversized line (file-history snapshots / big
+    // tool results can be hundreds of KB and are never what we're after).
+    func headLines(_ path: String, maxBytes: Int = 524288, lineCap: Int = 49152) -> [[String: Any]] {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return [] }
+        defer { try? fh.close() }
+        let data = (try? fh.read(upToCount: maxBytes)) ?? Data()
+        var out: [[String: Any]] = []
+        for line in data.split(separator: 0x0a) where line.count <= lineCap {
+            if let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] { out.append(o) }
+        }
+        return out
+    }
+
+    func mtime(_ path: String) -> Double {
+        ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?
+            .timeIntervalSince1970 ?? 0
+    }
+
+    // first human-typed prompt — skip tool results, slash-command wrappers (<…>)
+    // and the local-command caveat banner so the label reads like what you asked.
+    func firstPrompt(_ rows: [[String: Any]]) -> String? {
+        for o in rows where (o["type"] as? String) == "user" {
+            guard let m = o["message"] as? [String: Any] else { continue }
+            var text = ""
+            if let s = m["content"] as? String { text = s }
+            else if let arr = m["content"] as? [[String: Any]] {
+                text = arr.compactMap { ($0["type"] as? String) == "text" ? $0["text"] as? String : nil }
+                          .joined(separator: " ")
+            }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty || text.hasPrefix("<") || text.hasPrefix("Caveat") { continue }
+            return text
+        }
+        return nil
+    }
+
+    func clip(_ s: String, _ n: Int = 90) -> String {
+        let t = s.replacingOccurrences(of: "\n", with: " ")
+        return t.count <= n ? t : String(t.prefix(n - 1)) + "…"
+    }
+
+    // codex thread names (nice human labels) keyed by session id, from the index.
+    func codexThreadNames() -> [String: String] {
+        var m: [String: String] = [:]
+        for o in headLines(codexIndex, maxBytes: 2_000_000, lineCap: 16384) {
+            if let id = o["id"] as? String, let name = o["thread_name"] as? String { m[id] = name }
+        }
+        return m
+    }
+
+    // codex stores cwd + id in the first line (session_meta); `instructions` can be
+    // big, so read the first line generously rather than capping per line.
+    func codexMeta(_ path: String) -> [String: Any]? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        let data = (try? fh.read(upToCount: 262144)) ?? Data()
+        let line = data.firstIndex(of: 0x0a).map { Data(data[..<$0]) } ?? data
+        return try? JSONSerialization.jsonObject(with: line) as? [String: Any]
+    }
+
+    // strip the xml-ish command wrappers codex sometimes stores as a thread name
+    // ("<command-name>/clear</command-name>" -> "/clear", or nil if empty).
+    func cleanLabel(_ s: String?) -> String? {
+        guard var t = s else { return nil }
+        while let r = t.range(of: "<[^>]+>", options: .regularExpression) { t.removeSubrange(r) }
+        t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    func historySession(agent: String, sid: String, cwd: String, branch: String?,
+                        label: String?, ended: Double) -> Session {
+        let proj = (cwd as NSString).lastPathComponent
+        // "HEAD" (detached / non-repo dir like ~) is noise, not a branch name
+        let br = (branch?.isEmpty == false && branch != "HEAD") ? branch : nil
+        return Session(agent: agent, sessionId: sid,
+                       project: proj.isEmpty ? "?" : proj, cwd: cwd, terminal: "",
+                       status: "ended", kind: nil, note: nil, branch: br,
+                       label: label.map { clip($0) }, activity: nil, loop: nil,
+                       lastActivity: ended)
+    }
+
+    func loadHistory(limit: Int = 400) -> [Session] {
+        let fm = FileManager.default
+        var out: [Session] = []
+        // claude: one jsonl per session, grouped by cwd-encoded project dir
+        if let projects = try? fm.contentsOfDirectory(atPath: claudeProjects) {
+            for proj in projects {
+                let dir = (claudeProjects as NSString).appendingPathComponent(proj)
+                for f in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where f.hasSuffix(".jsonl") {
+                    let path = (dir as NSString).appendingPathComponent(f)
+                    let rows = headLines(path)
+                    let cwd = rows.first(where: { $0["cwd"] != nil })?["cwd"] as? String ?? ""
+                    let branch = rows.first(where: { $0["gitBranch"] != nil })?["gitBranch"] as? String
+                    out.append(historySession(agent: "claude", sid: (f as NSString).deletingPathExtension,
+                                               cwd: cwd, branch: branch,
+                                               label: firstPrompt(rows), ended: mtime(path)))
+                }
+            }
+        }
+        // codex: cwd + id from each session_meta line, label from the index
+        let names = codexThreadNames()
+        if let en = fm.enumerator(atPath: codexSessions) {
+            for case let rel as String in en where rel.hasSuffix(".jsonl") {
+                let path = (codexSessions as NSString).appendingPathComponent(rel)
+                guard let meta = codexMeta(path),
+                      (meta["type"] as? String) == "session_meta",
+                      let p = meta["payload"] as? [String: Any],
+                      let sid = p["id"] as? String, !sid.isEmpty else { continue }
+                out.append(historySession(agent: "codex", sid: sid,
+                                           cwd: p["cwd"] as? String ?? "", branch: nil,
+                                           label: cleanLabel(names[sid]), ended: mtime(path)))
+            }
+        }
+        var seen = Set<String>(); var dedup: [Session] = []
+        for s in out.sorted(by: { $0.lastActivity > $1.lastActivity }) {
+            let k = "\(s.agent)-\(s.sessionId)"
+            if seen.contains(k) { continue }
+            seen.insert(k); dedup.append(s)
+            if dedup.count >= limit { break }
+        }
+        return dedup
+    }
+
     func kindOf(_ s: Session) -> String {
+        if let k = s.kind, !k.isEmpty { return k }
         if let k = s.kind, !k.isEmpty { return k }
         if s.agent == "codex" { return "codex_approval" }       // backward-compat
         return (s.note?.isEmpty == false) ? s.note! : "other"
@@ -390,6 +526,15 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tick()
         timer = Timer.scheduledTimer(timeInterval: 2, target: self,
                                      selector: #selector(tick), userInfo: nil, repeats: true)
+        // test/debug: open the history window straight away (used to verify it
+        // renders). harmless when unset, like HARBAR_REMIND_LOG. flips to a regular
+        // app so the window is allowed to come forward for a screenshot.
+        if ProcessInfo.processInfo.environment["HARBAR_OPEN_HISTORY"] != nil {
+            DispatchQueue.main.async {
+                NSApp.setActivationPolicy(.regular)
+                self.openHistory()
+            }
+        }
     }
 
     @objc func tick() {
@@ -604,6 +749,10 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sounds.submenu = ssub
         menu.addItem(sounds)
 
+        let hist = NSMenuItem(title: "🕘 Browse history…", action: #selector(openHistory), keyEquivalent: "h")
+        hist.target = self
+        menu.addItem(hist)
+
         triageIdx = 0      // opening the menu restarts the hotkey cycle from the top
         // nil action = auto-disabled by NSMenu when nothing is blocked
         let j = NSMenuItem(title: "Jump to longest-blocked   ⌃⌥J",
@@ -786,6 +935,19 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return rem == 0 ? "\(m) min" : "\(m)m\(rem)s"
     }
 
+    // open the searchable history window, building it lazily. an .accessory app
+    // shows windows fine but needs an explicit activate to take keyboard focus.
+    @objc func openHistory() {
+        if historyWC == nil { historyWC = HistoryWindowController(resumeScript: resumeScript) }
+        NSApp.activate(ignoringOtherApps: true)
+        historyWC!.show(loadHistory())
+    }
+
+    // for headless testing: print the scanned history (no GUI). `--history`
+    func historyLine(_ s: Session) -> String {
+        "\(tag[s.agent] ?? "?") \(s.displayName)  ·  \(s.cwd)  ·  \(agoStr(s.lastActivity)) ago"
+    }
+
     @objc func refreshNow() { tick() }
     @objc func quit() { NSApp.terminate(nil) }
 
@@ -822,7 +984,199 @@ final class HarbarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
+// a table that resumes the selected row on Enter and closes its window on Esc;
+// NSTableView does neither by default.
+final class HistoryTable: NSTableView {
+    var onEnter: (() -> Void)?
+    var onEsc: (() -> Void)?
+    override func keyDown(with e: NSEvent) {
+        switch e.keyCode {
+        case 36, 76: onEnter?()        // return / numpad enter
+        case 53:     onEsc?()          // esc
+        default:     super.keyDown(with: e)
+        }
+    }
+}
+
+// the browsable + searchable history window. opened from the menu, populated by
+// HarbarController.loadHistory(). type to filter, Enter/double-click to resume.
+final class HistoryWindowController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    let resumeScript: String
+    let tag = ["claude": "◆", "codex": "☁\u{FE0E}"]
+    var window: NSWindow!
+    var table: HistoryTable!
+    var search: NSSearchField!
+    var status: NSTextField!
+    var all: [Session] = []
+    var shown: [Session] = []
+
+    init(resumeScript: String) { self.resumeScript = resumeScript; super.init(); build() }
+
+    func build() {
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 480),
+                           styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                           backing: .buffered, defer: false)
+        win.title = "Harbar — History"
+        win.isReleasedWhenClosed = false
+        win.minSize = NSSize(width: 420, height: 240)
+        let content = NSView()
+
+        search = NSSearchField()
+        search.translatesAutoresizingMaskIntoConstraints = false
+        search.placeholderString = "search project, branch, task, agent…"
+        search.delegate = self
+        content.addSubview(search)
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        table = HistoryTable()
+        table.headerView = nil
+        table.rowHeight = 46
+        table.style = .inset
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c"))
+        col.resizingMask = .autoresizingMask
+        table.addTableColumn(col)
+        table.dataSource = self
+        table.delegate = self
+        table.target = self
+        table.doubleAction = #selector(resumeSelected)
+        table.onEnter = { [weak self] in self?.resumeSelected() }
+        table.onEsc = { [weak self] in self?.window.orderOut(nil) }
+        scroll.documentView = table
+        content.addSubview(scroll)
+
+        status = NSTextField(labelWithString: "")
+        status.translatesAutoresizingMaskIntoConstraints = false
+        status.font = NSFont.systemFont(ofSize: 11)
+        status.textColor = .secondaryLabelColor
+        content.addSubview(status)
+
+        NSLayoutConstraint.activate([
+            search.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
+            search.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            search.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            scroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -6),
+            status.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
+            status.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            status.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
+        ])
+        win.contentView = content
+        win.center()
+        window = win
+    }
+
+    func show(_ sessions: [Session]) {
+        all = sessions
+        applyFilter(search.stringValue)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(search)
+    }
+
+    func rowHay(_ s: Session) -> String {
+        [s.project, s.branch ?? "", s.label ?? "", s.agent, s.cwd].joined(separator: " ").lowercased()
+    }
+
+    func applyFilter(_ q: String) {
+        let terms = q.lowercased().split(separator: " ").map(String.init)
+        shown = terms.isEmpty ? all : all.filter { s in
+            let hay = rowHay(s); return terms.allSatisfy { hay.contains($0) }
+        }
+        table.reloadData()
+        if !shown.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        let total = all.count
+        status.stringValue = terms.isEmpty
+            ? "\(total) session\(total == 1 ? "" : "s")  ·  ↵ or double-click to resume"
+            : "\(shown.count) of \(total)  ·  ↵ resumes the selected row"
+    }
+
+    func controlTextDidChange(_ obj: Notification) { applyFilter(search.stringValue) }
+
+    // a search field's target/action fires on every keystroke (incremental
+    // search), so it can't mean "resume". drive the keys explicitly off the field
+    // editor instead: ↵ resumes the selection, ↓ jumps into the list, Esc clears
+    // the query (or closes the window when it's already empty).
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        switch sel {
+        case #selector(NSResponder.insertNewline(_:)):
+            resumeSelected(); return true
+        case #selector(NSResponder.moveDown(_:)):
+            window.makeFirstResponder(table)
+            if !shown.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            if control.stringValue.isEmpty { window.orderOut(nil); return true }
+            return false                                   // let the field clear itself
+        default:
+            return false
+        }
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let s = shown[row]
+        let id = NSUserInterfaceItemIdentifier("cell")
+        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView) ?? {
+            let c = NSTableCellView(); c.identifier = id
+            let title = NSTextField(labelWithString: ""); title.tag = 1
+            title.lineBreakMode = .byTruncatingTail
+            let sub = NSTextField(labelWithString: ""); sub.tag = 2
+            sub.font = NSFont.systemFont(ofSize: 11); sub.textColor = .secondaryLabelColor
+            sub.lineBreakMode = .byTruncatingMiddle
+            for v in [title, sub] { v.translatesAutoresizingMaskIntoConstraints = false; c.addSubview(v) }
+            NSLayoutConstraint.activate([
+                title.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 4),
+                title.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -6),
+                title.topAnchor.constraint(equalTo: c.topAnchor, constant: 5),
+                sub.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 4),
+                sub.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -6),
+                sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
+            ])
+            return c
+        }()
+        (cell.viewWithTag(1) as? NSTextField)?.stringValue = "\(tag[s.agent] ?? "?")  \(s.displayName)"
+        let cwd = s.cwd.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+        (cell.viewWithTag(2) as? NSTextField)?.stringValue =
+            "\(cwd.isEmpty ? "—" : cwd)   ·   \(dateStr(s.lastActivity))"
+        return cell
+    }
+
+    func dateStr(_ t: Double) -> String {
+        guard t > 0 else { return "?" }
+        let d = Date(timeIntervalSince1970: t)
+        let f = DateFormatter(); f.dateFormat = "MMM d, HH:mm"
+        let ago = Date().timeIntervalSince(d)
+        let rel = ago < 3600 ? "\(Int(ago / 60))m ago"
+                : ago < 86400 ? "\(Int(ago / 3600))h ago"
+                : "\(Int(ago / 86400))d ago"
+        return "\(f.string(from: d)) · \(rel)"
+    }
+
+    @objc func resumeSelected() {
+        let row = table.selectedRow >= 0 ? table.selectedRow : (shown.isEmpty ? -1 : 0)
+        guard row >= 0, row < shown.count else { return }
+        let s = shown[row]
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [resumeScript, s.agent, s.sessionId, s.cwd]
+        try? p.run()
+        window.orderOut(nil)
+    }
+}
+
 // entry point
+if CommandLine.arguments.contains("--history") {
+    let c = HarbarController()
+    let h = c.loadHistory()
+    print("\(h.count) sessions")
+    for s in h { print(c.historyLine(s)) }
+    exit(0)
+}
 if CommandLine.arguments.contains("--dump") {
     HarbarController().dump()
     exit(0)

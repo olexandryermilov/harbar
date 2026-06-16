@@ -2,6 +2,16 @@
 
 all notable changes, newest first. versions match `.claude-plugin/plugin.json`.
 
+## 1.10.0 — 2026-06-16
+
+- **🕘 Browse history** (menu ▸ Browse history…): a searchable window over *every* past session, not
+  just the 12 in ↻ RECENT — the safety net for a session you closed by accident. built fresh on each
+  open from the agents' own transcripts (`~/.claude/projects/**`, `~/.codex/sessions/**`), so it's
+  populated from day one and every row is resumable. type to filter across project / branch / task /
+  agent; **↵ or double-click** resumes (via the same `resume.sh` as RECENT), **⎋** closes. claude rows
+  are labelled with the first prompt, codex rows with the thread name. reads only the head of each
+  transcript, so a 20MB log costs nothing.
+
 ## 1.9.0 — 2026-06-11
 
 - **per-kind notification sounds** (menu ▸ Sounds): each needs-input kind gets its own sound —
