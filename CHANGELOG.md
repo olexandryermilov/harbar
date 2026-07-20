@@ -2,6 +2,15 @@
 
 all notable changes, newest first. versions match `.claude-plugin/plugin.json`.
 
+## 1.10.2 — 2026-07-20
+
+- **fix: resuming a session opened in the wrong directory and failed**. `claude --resume <id>` only
+  finds a session when run from the dir it was *launched* in, but the cwd captured by the hook can
+  drift into a subdir the session cd'd into — so resume landed deep in the project (or elsewhere) and
+  reported no conversation found. now the launch dir is authoritative: `resume.sh` reads it straight
+  from the transcript's first `cwd` line, and the hook pins `cwd` to that on first sight so later
+  drift can't clobber it (also fixes the wrong project label in the menu). codex resume is unchanged.
+
 ## 1.10.1 — 2026-06-16
 
 - **fix: a session stayed on 🔐 after you approved**, until the whole turn ended, instead of flipping
