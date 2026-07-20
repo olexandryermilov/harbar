@@ -9,6 +9,9 @@
     "PreToolUse": [
       { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/src/harbar-hook.py\" claude" } ] }
     ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/src/harbar-hook.py\" claude" } ] }
+    ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/src/harbar-hook.py\" claude --notify" } ] }
     ],
