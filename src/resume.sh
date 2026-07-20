@@ -8,6 +8,27 @@ agent="$1"; sid="$2"; cwd="${3:-$HOME}"
 # it's being resumed — drop it from the recent list (a SessionEnd re-adds it)
 rm -f "$HOME/.harbar/recent/$agent-$sid.json"
 
+# claude keys a session under the dir it was LAUNCHED in (`~/.claude/projects/
+# <encoded-launch-dir>/<sid>.jsonl`), and `claude --resume <sid>` only finds it
+# when run from that exact dir. the cwd captured by the hook can drift to a
+# subdir the session cd'd into, which then fails to resume. so for claude,
+# ignore the passed cwd and read the authoritative launch dir straight from the
+# transcript (its first `cwd` line) — falling back to the passed cwd if not found.
+if [ "$agent" = "claude" ]; then
+  tx=$(find "$HOME/.claude/projects" -name "$sid.jsonl" -type f 2>/dev/null | head -1)
+  if [ -n "$tx" ]; then
+    real=$(python3 -c "
+import json,sys
+for line in open(sys.argv[1]):
+    try:
+        c=json.loads(line).get('cwd')
+        if c: print(c); break
+    except Exception: pass
+" "$tx" 2>/dev/null)
+    [ -n "$real" ] && cwd="$real"
+  fi
+fi
+
 if [ "$agent" = "codex" ]; then cmd="codex resume $sid"; else cmd="claude --resume $sid"; fi
 full="cd '$cwd' && $cmd"
 

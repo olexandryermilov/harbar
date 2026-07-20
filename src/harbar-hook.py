@@ -310,6 +310,37 @@ def find_agent_pid():
     return fallback
 
 
+def launch_cwd(ev, agent, sid):
+    """claude keys a session under the dir it was LAUNCHED in and `claude
+    --resume` only finds it there; the hook payload's `cwd` can drift into a
+    subdir the session cd'd into. the transcript's first `cwd` line is the
+    authoritative launch dir. read it from the payload's transcript_path (or,
+    as a fallback, by locating <sid>.jsonl under ~/.claude/projects)."""
+    if agent != "claude":
+        return None
+    tp = ev.get("transcript_path")
+    if not tp or not os.path.exists(tp):
+        try:
+            hits = list((pathlib.Path.home() / ".claude" / "projects").glob(f"*/{sid}.jsonl"))
+            tp = str(hits[0]) if hits else None
+        except Exception:
+            tp = None
+    if not tp:
+        return None
+    try:
+        with open(tp) as fh:
+            for line in fh:
+                try:
+                    c = json.loads(line).get("cwd")
+                    if c:
+                        return c
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return None
+
+
 RECENT_KEEP = 12
 
 
@@ -345,11 +376,20 @@ def process(ev, agent, notify=False):
         (HARBAR.parent / "recent" / f.name).unlink(missing_ok=True)
 
     name = ev["hook_event_name"]
-    cwd = ev.get("cwd", prev.get("cwd", ""))
+    # pin cwd to the launch dir once (from the transcript), then keep it — the
+    # payload cwd can drift into a subdir and break `claude --resume`.
+    if prev.get("cwd_pinned"):
+        cwd, cwd_pinned = prev.get("cwd", ""), True
+    else:
+        real = launch_cwd(ev, agent, sid)
+        if real:
+            cwd, cwd_pinned = real, True
+        else:
+            cwd, cwd_pinned = ev.get("cwd", prev.get("cwd", "")), False
     disp_term, focus_app = detect_terminal()
     rec = dict(prev)
     rec.update(
-        agent=agent, session_id=sid, cwd=cwd,
+        agent=agent, session_id=sid, cwd=cwd, cwd_pinned=cwd_pinned,
         project=os.path.basename(cwd.rstrip("/")) or cwd,
         terminal=disp_term, focus_app=focus_app,
         iterm_session_id=os.environ.get("ITERM_SESSION_ID", prev.get("iterm_session_id")),
