@@ -69,6 +69,7 @@ live in `~/.codex/hooks.json` and must be trusted with `/hooks`.
 | `SessionStart` | — | idle (registers the session) |
 | `UserPromptSubmit` | — | working (+ captures git branch + prompt label + `/loop` tracking) |
 | `PreToolUse` | — | working (+ shows the current tool: `editing X`, `$ git`, `searching`, …) |
+| `PostToolUse` | — | working (flips a session back out of 🔐 the moment an approved tool finishes) |
 | `Stop` | — | idle |
 | `StopFailure` | — | error |
 | `SessionEnd` | — | removes the tile |
@@ -81,6 +82,7 @@ live in `~/.codex/hooks.json` and must be trusted with `/hooks`.
 | `SessionStart` | idle |
 | `UserPromptSubmit` | working |
 | `PreToolUse` | working (+ current tool) |
+| `PostToolUse` | working (flips out of 🛑 when an approved tool finishes) |
 | `Stop` | idle |
 | `PermissionRequest` | needs input (🛑 approval) |
 

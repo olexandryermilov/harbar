@@ -2,6 +2,16 @@
 
 all notable changes, newest first. versions match `.claude-plugin/plugin.json`.
 
+## 1.10.1 — 2026-06-16
+
+- **fix: a session stayed on 🔐 after you approved**, until the whole turn ended, instead of flipping
+  to ▸ working. cause: `PostToolUse` was never registered (only `PreToolUse` was), so when the
+  approved tool was the last action of the turn, harbar got no event until `Stop` and sat on the
+  permission badge the entire time. now registers `PostToolUse` for both claude and codex (the hook
+  already handled it) — the row flips to working the moment the approved tool finishes.
+  note: while the approved tool is *still executing* it necessarily shows 🔐 — Claude Code fires no
+  hook at the instant you approve (the next event is `PostToolUse`, at tool completion).
+
 ## 1.10.0 — 2026-06-16
 
 - **🕘 Browse history** (menu ▸ Browse history…): a searchable window over *every* past session, not
